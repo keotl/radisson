@@ -4,7 +4,7 @@ lazy val pekkoVersion = "1.4.0"
 lazy val root = project
   .in(file("."))
   .settings(
-    name := "hudson",
+    name := "radisson",
     version := "0.1.0-SNAPSHOT",
     scalaVersion := scala3Version,
     semanticdbEnabled := true,
