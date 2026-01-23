@@ -1,0 +1,28 @@
+# Radisson LLM Proxy Server - Example Configuration
+#
+# Copy this file to config.yaml and customize for your environment
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  request_timeout: 300
+
+backends:
+  # Remote OpenAI provider - gpt-3.5-turbo
+  - id: "openai-gpt35"
+    type: "remote"
+    endpoint: "https://api.openai.com/v1"
+    api_key: "<OPENAI_API_KEY>"  # Replace with api key
+    model: "gpt-3.5-turbo"
+    upstream_timeout: 60 # Optional, override default
+
+  # Local backend - automatically loaded/unloaded according to available resources
+  - id: "llama-3.1-1B"
+    type: "local"
+    command: "llama-server -m ./llama-3.1-1B.Q2_K.gguf --port {port} -c 4096 --host 127.0.0.1"
+    resources:
+      memory: "100Mi"
+
+
+resources:
+  total_memory: "1024Mi"
