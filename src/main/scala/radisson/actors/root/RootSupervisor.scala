@@ -5,6 +5,7 @@ import scala.concurrent.duration._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import org.apache.pekko.http.scaladsl.Http.ServerBinding
+import radisson.actors.backend.LlamaBackendSupervisor
 import radisson.actors.http.HttpServerActor
 import radisson.actors.http.api.RouteBuilder
 import radisson.config.AppConfig
@@ -30,6 +31,19 @@ object RootSupervisor extends Logging {
         )
 
         val routes = RouteBuilder.buildRoutes(config)
+
+        // Spawn LlamaBackendSupervisor with supervision
+        val backendSupervisor = context.spawn(
+          Behaviors
+            .supervise(LlamaBackendSupervisor.behavior)
+            .onFailure[Exception](
+              SupervisorStrategy.restart
+                .withLimit(maxNrOfRetries = 3, withinTimeRange = 1.minute)
+            ),
+          "backend-supervisor"
+        )
+
+        backendSupervisor ! LlamaBackendSupervisor.Command.Initialize(config)
 
         // Spawn HttpServerActor with supervision
         val httpServer = context.spawn(
