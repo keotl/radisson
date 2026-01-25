@@ -6,6 +6,7 @@ import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import org.apache.pekko.http.scaladsl.Http.ServerBinding
 import radisson.actors.backend.LlamaBackendSupervisor
+import radisson.actors.completion.CompletionRequestDispatcher
 import radisson.actors.http.HttpServerActor
 import radisson.actors.http.api.RouteBuilder
 import radisson.config.AppConfig
@@ -30,8 +31,6 @@ object RootSupervisor extends Logging {
           config.server.port
         )
 
-        val routes = RouteBuilder.buildRoutes(config)
-
         // Spawn LlamaBackendSupervisor with supervision
         val backendSupervisor = context.spawn(
           Behaviors
@@ -44,6 +43,25 @@ object RootSupervisor extends Logging {
         )
 
         backendSupervisor ! LlamaBackendSupervisor.Command.Initialize(config)
+
+        // Spawn CompletionRequestDispatcher with supervision
+        val completionDispatcher = context.spawn(
+          Behaviors
+            .supervise(CompletionRequestDispatcher.behavior)
+            .onFailure[Exception](
+              SupervisorStrategy.restart
+                .withLimit(maxNrOfRetries = 3, withinTimeRange = 1.minute)
+            ),
+          "completion-dispatcher"
+        )
+
+        completionDispatcher ! CompletionRequestDispatcher.Command.Initialize(
+          config,
+          backendSupervisor
+        )
+
+        given system: org.apache.pekko.actor.typed.ActorSystem[?] = context.system
+        val routes = RouteBuilder.buildRoutes(config, completionDispatcher)
 
         // Spawn HttpServerActor with supervision
         val httpServer = context.spawn(

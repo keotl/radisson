@@ -1,15 +1,26 @@
 package radisson.actors.http.api.routes
 
-import java.util.UUID
+import scala.concurrent.duration._
 
-import org.apache.pekko.http.scaladsl.model.StatusCodes
+import org.apache.pekko.actor.typed.{ActorRef, ActorSystem}
+import org.apache.pekko.actor.typed.scaladsl.AskPattern._
+import org.apache.pekko.http.scaladsl.model.{StatusCode, StatusCodes}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.Route
+import org.apache.pekko.util.Timeout
+import radisson.actors.completion.CompletionRequestDispatcher
 import radisson.actors.http.api.models._
+import radisson.config.AppConfig
 import radisson.util.JsonSupport.given
 
 object ChatCompletionsRoutes {
-  def routes: Route =
+  def routes(
+    config: AppConfig,
+    dispatcher: ActorRef[CompletionRequestDispatcher.Command]
+  )(using system: ActorSystem[?]): Route = {
+
+    given timeout: Timeout = Timeout(config.server.request_timeout.seconds)
+
     pathPrefix("v1") {
       path("chat" / "completions") {
         post {
@@ -29,12 +40,22 @@ object ChatCompletionsRoutes {
                     )
                   )
                 else
-                  val response = generateMockResponse(request)
-                  complete(response)
+                  val responseFuture = dispatcher.ask[CompletionRequestDispatcher.CompletionResponse](
+                    replyTo => CompletionRequestDispatcher.Command.HandleCompletion(request, replyTo)
+                  )
+
+                  onSuccess(responseFuture) {
+                    case CompletionRequestDispatcher.CompletionResponse.Success(response) =>
+                      complete(response)
+
+                    case CompletionRequestDispatcher.CompletionResponse.Error(error, statusCode) =>
+                      complete(StatusCode.int2StatusCode(statusCode), error)
+                  }
           }
         }
       }
     }
+  }
 
   private def validateRequest(
       req: ChatCompletionRequest
@@ -50,34 +71,5 @@ object ChatCompletionsRoutes {
         ErrorResponse(ErrorDetail("model cannot be empty", "invalid_request"))
       )
     else Right(())
-
-  private def generateMockResponse(
-      req: ChatCompletionRequest
-  ): ChatCompletionResponse =
-    ChatCompletionResponse(
-      id = s"chatcmpl-${UUID.randomUUID().toString}",
-      `object` = "chat.completion",
-      created = System.currentTimeMillis() / 1000,
-      model = req.model,
-      choices = List(
-        Choice(
-          index = 0,
-          message = Message(
-            role = "assistant",
-            content =
-              "This is a mock response from Radisson. Backend integration coming soon!"
-          ),
-          finish_reason = Some("stop")
-        )
-      ),
-      usage = Usage(
-        prompt_tokens = estimateTokens(req.messages),
-        completion_tokens = 15,
-        total_tokens = estimateTokens(req.messages) + 15
-      )
-    )
-
-  private def estimateTokens(messages: List[Message]): Int =
-    messages.map(msg => msg.content.split("\\s+").length).sum
 
 }
