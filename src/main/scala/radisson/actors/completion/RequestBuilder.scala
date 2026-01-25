@@ -3,12 +3,15 @@ package radisson.actors.completion
 import scala.concurrent.duration._
 
 import io.circe.syntax._
+import io.circe.Printer
 import org.apache.pekko.actor.typed.ActorSystem
 import radisson.actors.http.api.models.ChatCompletionRequest
 import radisson.config.BackendConfig
 import sttp.client4._
 
 object RequestBuilder {
+
+  private val printer = Printer.noSpaces.copy(dropNullValues = true)
 
   case class EndpointInfo(
       requestUrl: String,
@@ -51,11 +54,19 @@ object RequestBuilder {
         req.header(key, value)
     }
 
+    val requestToSend = endpointInfo.model match {
+      case Some(backendModel) => request.copy(model = backendModel)
+      case None               => request
+    }
+
+    val jsonBody = requestToSend.asJson.printWith(printer)
+
     requestWithHeaders
       .post(uri"${endpointInfo.requestUrl}")
       .readTimeout(endpointInfo.timeout.seconds)
       .response(asString)
-      .body(request.asJson.noSpaces)
+      .contentType("application/json")
+      .body(jsonBody)
   }
 
   def buildStreamingRequest(
@@ -67,10 +78,16 @@ object RequestBuilder {
         req.header(key, value)
     }
 
+    val requestToSend = endpointInfo.model match {
+      case Some(backendModel) => request.copy(model = backendModel)
+      case None               => request
+    }
+
     requestWithHeaders
       .post(uri"${endpointInfo.requestUrl}")
       .readTimeout(endpointInfo.timeout.seconds)
-      .body(request.asJson.noSpaces)
+      .contentType("application/json")
+      .body(requestToSend.asJson.printWith(printer))
       .response(asStreamUnsafe(sttp.capabilities.pekko.PekkoStreams))
   }
 }

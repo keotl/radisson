@@ -40,10 +40,8 @@ object CompletionRequestActor extends Logging {
         endpointInfo
       )
 
-      val requestWithBody = httpRequest.body(request.asJson.noSpaces)
-
       val responseFuture =
-        requestWithBody.send(sttpBackend).flatMap { response =>
+        httpRequest.send(sttpBackend).flatMap { response =>
           val bodyString = response.body match {
             case Right(body) => body
             case Left(body)  => body
