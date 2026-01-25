@@ -39,7 +39,9 @@ object LlamaBackendSupervisor extends Logging {
 
   case class StartingBackend(
       memoryReserved: Long,
-      replyTo: ActorRef[BackendResponse]
+      replyTo: ActorRef[BackendResponse],
+      runner: ActorRef[LlamaBackendRunner.Command],
+      port: Int
   )
 
   case class SupervisorState(
@@ -189,13 +191,12 @@ object LlamaBackendSupervisor extends Logging {
             case Some(starting) =>
               log.error("Backend {} failed to start: {}", backendId, reason)
               starting.replyTo ! BackendResponse.Failed(reason)
+              context.stop(starting.runner)
 
               active(
                 state.copy(
                   startingBackends = state.startingBackends - backendId,
-                  allocatedPorts =
-                    state.allocatedPorts - findPortForBackend(state, backendId)
-                      .getOrElse(0)
+                  allocatedPorts = state.allocatedPorts - starting.port
                 )
               )
 
@@ -327,6 +328,7 @@ object LlamaBackendSupervisor extends Logging {
                 backendConfig.id
               )
 
+              val uniqueId = java.util.UUID.randomUUID().toString.take(8)
               val runner = context.spawn(
                 Behaviors
                   .supervise(LlamaBackendRunner.behavior)
@@ -334,7 +336,7 @@ object LlamaBackendSupervisor extends Logging {
                     SupervisorStrategy.restart
                       .withLimit(maxNrOfRetries = 3, withinTimeRange = 1.minute)
                   ),
-                s"backend-runner-${backendConfig.id}"
+                s"backend-runner-${backendConfig.id}-$uniqueId"
               )
 
               runner ! LlamaBackendRunner.Command.Start(
@@ -346,7 +348,9 @@ object LlamaBackendSupervisor extends Logging {
 
               val startingBackend = StartingBackend(
                 memoryReserved = requiredMemory,
-                replyTo = replyTo
+                replyTo = replyTo,
+                runner = runner,
+                port = port
               )
 
               replyTo ! BackendResponse.Starting

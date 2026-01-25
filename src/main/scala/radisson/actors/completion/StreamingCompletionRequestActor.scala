@@ -37,14 +37,12 @@ object StreamingCompletionRequestActor {
       requestId: String
   ): Behavior[Command] =
     Behaviors.setup { context =>
-      import org.apache.pekko.actor.typed.scaladsl.adapter._
-
-      given classicSystem: org.apache.pekko.actor.ActorSystem =
-        context.system.toClassic
+      given system: org.apache.pekko.actor.typed.ActorSystem[?] =
+        context.system
       given sttpBackend: WebSocketStreamBackend[
         Future,
         sttp.capabilities.pekko.PekkoStreams
-      ] = PekkoHttpBackend()
+      ] = PekkoHttpBackend.usingActorSystem(context.system.classicSystem)
 
       Behaviors.receiveMessage {
         case Command.Execute(request, endpointInfo) =>

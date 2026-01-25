@@ -35,13 +35,13 @@ object HttpServerActor extends Logging {
         case Command.Start(config, routes, replyTo) =>
           log.info("Starting HTTP server on {}:{}", config.host, config.port)
 
-          // Bind HTTP server
-          implicit val classicSystem = context.system.classicSystem
+          given system: org.apache.pekko.actor.typed.ActorSystem[?] =
+            context.system
+
           val bindingFuture = Http()
             .newServerAt(config.host, config.port)
-            .bindFlow(Route.toFlow(routes)(classicSystem))
+            .bind(routes)
 
-          // Use pipeToSelf to handle async result
           context.pipeToSelf(bindingFuture) { result =>
             Command.BindingCompleted(result, replyTo)
           }

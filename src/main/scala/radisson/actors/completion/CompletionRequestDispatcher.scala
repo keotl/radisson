@@ -6,8 +6,31 @@ import radisson.actors.backend.LlamaBackendSupervisor
 import radisson.actors.http.api.models.{ChatCompletionRequest, ChatCompletionResponse, ErrorDetail, ErrorResponse}
 import radisson.config.AppConfig
 import radisson.util.Logging
+import scala.concurrent.duration.*
 
 object CompletionRequestDispatcher extends Logging {
+
+  private val MaxBackendStartRetries = 20
+  private val BackendStartRetryDelay = 3.seconds
+
+  private object QueueAdapter {
+    def behavior(
+        queue: org.apache.pekko.stream.scaladsl.SourceQueueWithComplete[
+          StreamingCompletionRequestActor.ChunkMessage
+        ]
+    ): Behavior[StreamingCompletionRequestActor.ChunkMessage] =
+      Behaviors.receive { (context, message) =>
+        queue.offer(message)
+        message match {
+          case StreamingCompletionRequestActor.ChunkMessage.Completed |
+              StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
+            queue.complete()
+            Behaviors.stopped
+          case _ =>
+            Behaviors.same
+        }
+      }
+  }
 
   enum Command {
     case Initialize(
@@ -22,21 +45,27 @@ object CompletionRequestDispatcher extends Logging {
 
     case HandleStreamingCompletion(
         request: ChatCompletionRequest,
-        chunkListener: ActorRef[StreamingCompletionRequestActor.ChunkMessage]
+        queue: org.apache.pekko.stream.scaladsl.SourceQueueWithComplete[
+          StreamingCompletionRequestActor.ChunkMessage
+        ]
     )
 
     case BackendResolved(
         backendId: String,
         backendResponse: LlamaBackendSupervisor.BackendResponse,
         request: ChatCompletionRequest,
-        replyTo: ActorRef[CompletionResponse]
+        replyTo: ActorRef[CompletionResponse],
+        retryCount: Int = 0
     )
 
     case StreamingBackendResolved(
         backendId: String,
         backendResponse: LlamaBackendSupervisor.BackendResponse,
         request: ChatCompletionRequest,
-        chunkListener: ActorRef[StreamingCompletionRequestActor.ChunkMessage]
+        queue: org.apache.pekko.stream.scaladsl.SourceQueueWithComplete[
+          StreamingCompletionRequestActor.ChunkMessage
+        ],
+        retryCount: Int = 0
     )
 
     case RequestCompleted(
@@ -102,14 +131,16 @@ object CompletionRequestDispatcher extends Logging {
               Behaviors.same
           }
 
-        case Command.HandleStreamingCompletion(request, chunkListener) =>
+        case Command.HandleStreamingCompletion(request, queue) =>
           BackendResolver.resolveBackend(request.model, state.config) match {
             case Left(error) =>
-              chunkListener ! StreamingCompletionRequestActor.ChunkMessage
-                .Failed(
+              queue.offer(
+                StreamingCompletionRequestActor.ChunkMessage.Failed(
                   error.error.message,
                   Some(400)
                 )
+              )
+              queue.complete()
               Behaviors.same
 
             case Right(backendConfig) =>
@@ -120,7 +151,7 @@ object CompletionRequestDispatcher extends Logging {
                       backendConfig.id,
                       response,
                       request,
-                      chunkListener
+                      queue
                     )
                 }
 
@@ -136,20 +167,57 @@ object CompletionRequestDispatcher extends Logging {
               backendId,
               backendResponse,
               request,
-              replyTo
+              replyTo,
+              retryCount
             ) =>
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
-              replyTo ! CompletionResponse.Error(
-                ErrorResponse(
-                  ErrorDetail(
-                    s"Backend '$backendId' is starting. Please retry in a few seconds.",
-                    "service_unavailable"
+              if retryCount >= MaxBackendStartRetries then
+                log.warn(
+                  "Backend '{}' did not start after {} attempts",
+                  backendId,
+                  MaxBackendStartRetries
+                )
+                replyTo ! CompletionResponse.Error(
+                  ErrorResponse(
+                    ErrorDetail(
+                      s"Backend '$backendId' failed to start in time. Please try again later.",
+                      "service_unavailable"
+                    )
+                  ),
+                  503
+                )
+                Behaviors.same
+              else
+                log.debug(
+                  "Backend '{}' is starting, retrying in {} (attempt {}/{})",
+                  backendId,
+                  BackendStartRetryDelay,
+                  retryCount + 1,
+                  MaxBackendStartRetries
+                )
+
+                val responseAdapter =
+                  context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
+                    response =>
+                      Command.BackendResolved(
+                        backendId,
+                        response,
+                        request,
+                        replyTo,
+                        retryCount + 1
+                      )
+                  }
+
+                context.scheduleOnce(
+                  BackendStartRetryDelay,
+                  state.backendSupervisor,
+                  LlamaBackendSupervisor.Command.RequestBackend(
+                    backendId,
+                    responseAdapter
                   )
-                ),
-                503
-              )
-              Behaviors.same
+                )
+                Behaviors.same
 
             case LlamaBackendSupervisor.BackendResponse
                   .Available(endpoint, port) =>
@@ -201,16 +269,55 @@ object CompletionRequestDispatcher extends Logging {
               backendId,
               backendResponse,
               request,
-              chunkListener
+              queue,
+              retryCount
             ) =>
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
-              chunkListener ! StreamingCompletionRequestActor.ChunkMessage
-                .Failed(
-                  s"Backend '$backendId' is starting. Please retry in a few seconds.",
-                  Some(503)
+              if retryCount >= MaxBackendStartRetries then
+                log.warn(
+                  "Backend '{}' did not start after {} attempts (streaming)",
+                  backendId,
+                  MaxBackendStartRetries
                 )
-              Behaviors.same
+                queue.offer(
+                  StreamingCompletionRequestActor.ChunkMessage.Failed(
+                    s"Backend '$backendId' failed to start in time. Please try again later.",
+                    Some(503)
+                  )
+                )
+                queue.complete()
+                Behaviors.same
+              else
+                log.debug(
+                  "Backend '{}' is starting, retrying in {} (streaming attempt {}/{})",
+                  backendId,
+                  BackendStartRetryDelay,
+                  retryCount + 1,
+                  MaxBackendStartRetries
+                )
+
+                val responseAdapter =
+                  context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
+                    response =>
+                      Command.StreamingBackendResolved(
+                        backendId,
+                        response,
+                        request,
+                        queue,
+                        retryCount + 1
+                      )
+                  }
+
+                context.scheduleOnce(
+                  BackendStartRetryDelay,
+                  state.backendSupervisor,
+                  LlamaBackendSupervisor.Command.RequestBackend(
+                    backendId,
+                    responseAdapter
+                  )
+                )
+                Behaviors.same
 
             case LlamaBackendSupervisor.BackendResponse
                   .Available(endpoint, port) =>
@@ -223,6 +330,11 @@ object CompletionRequestDispatcher extends Logging {
                 endpoint,
                 port,
                 state.config.server.request_timeout
+              )
+
+              val chunkListener = context.spawn(
+                QueueAdapter.behavior(queue),
+                s"queue-adapter-$requestId"
               )
 
               val streamingActor = context.spawn(
@@ -247,11 +359,13 @@ object CompletionRequestDispatcher extends Logging {
               )
 
             case LlamaBackendSupervisor.BackendResponse.Failed(reason) =>
-              chunkListener ! StreamingCompletionRequestActor.ChunkMessage
-                .Failed(
+              queue.offer(
+                StreamingCompletionRequestActor.ChunkMessage.Failed(
                   s"Backend failed: $reason",
                   Some(500)
                 )
+              )
+              queue.complete()
               Behaviors.same
           }
 

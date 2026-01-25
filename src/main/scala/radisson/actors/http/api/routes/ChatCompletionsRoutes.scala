@@ -38,28 +38,17 @@ object ChatCompletionsRoutes {
                 complete(StatusCodes.BadRequest, error)
               case Right(_) =>
                 if request.stream.contains(true) then {
-                  val (queue, source) = Source
+                  val (queueRef, source) = Source
                     .queue[StreamingCompletionRequestActor.ChunkMessage](
                       bufferSize = 100,
                       OverflowStrategy.backpressure
                     )
                     .preMaterialize()
 
-                  val chunkListener = system.classicSystem.actorOf(
-                    org.apache.pekko.actor.Props(new QueueAdapter(queue))
-                  )
-
-                  val chunkListenerTyped =
-                    org.apache.pekko.actor.typed.scaladsl.adapter
-                      .ClassicActorRefOps(
-                        chunkListener
-                      )
-                      .toTyped[StreamingCompletionRequestActor.ChunkMessage]
-
                   dispatcher ! CompletionRequestDispatcher.Command
                     .HandleStreamingCompletion(
                       request,
-                      chunkListenerTyped
+                      queueRef
                     )
 
                   val sseSource = source.map {
@@ -119,23 +108,5 @@ object ChatCompletionsRoutes {
         ErrorResponse(ErrorDetail("model cannot be empty", "invalid_request"))
       )
     else Right(())
-
-  private class QueueAdapter(
-      queue: org.apache.pekko.stream.scaladsl.SourceQueueWithComplete[
-        StreamingCompletionRequestActor.ChunkMessage
-      ]
-  ) extends org.apache.pekko.actor.Actor {
-    def receive: Receive = {
-      case msg: StreamingCompletionRequestActor.ChunkMessage =>
-        queue.offer(msg)
-        msg match {
-          case StreamingCompletionRequestActor.ChunkMessage.Completed |
-              StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
-            queue.complete()
-            context.stop(self)
-          case _ => ()
-        }
-    }
-  }
 
 }
