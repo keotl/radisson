@@ -4,6 +4,8 @@ import radisson.actors.http.api.models.ChatCompletionRequest
 import radisson.config.BackendConfig
 import sttp.client4._
 import scala.concurrent.duration._
+import org.apache.pekko.actor.typed.ActorSystem
+import io.circe.syntax._
 
 object RequestBuilder {
 
@@ -52,5 +54,22 @@ object RequestBuilder {
       .post(uri"${endpointInfo.requestUrl}")
       .readTimeout(endpointInfo.timeout.seconds)
       .response(asString)
+      .body(request.asJson.noSpaces)
+  }
+
+  def buildStreamingRequest(
+      request: ChatCompletionRequest,
+      endpointInfo: EndpointInfo
+  )(using ActorSystem[?]) = {
+    val requestWithHeaders = endpointInfo.headers.foldLeft(quickRequest) {
+      case (req, (key, value)) =>
+        req.header(key, value)
+    }
+
+    requestWithHeaders
+      .post(uri"${endpointInfo.requestUrl}")
+      .readTimeout(endpointInfo.timeout.seconds)
+      .body(request.asJson.noSpaces)
+      .response(asStreamUnsafe(sttp.capabilities.pekko.PekkoStreams))
   }
 }

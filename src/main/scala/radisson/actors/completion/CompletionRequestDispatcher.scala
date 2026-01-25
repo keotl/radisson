@@ -20,6 +20,11 @@ object CompletionRequestDispatcher extends Logging {
       replyTo: ActorRef[CompletionResponse]
     )
 
+    case HandleStreamingCompletion(
+      request: ChatCompletionRequest,
+      chunkListener: ActorRef[StreamingCompletionRequestActor.ChunkMessage]
+    )
+
     case BackendResolved(
       backendId: String,
       backendResponse: LlamaBackendSupervisor.BackendResponse,
@@ -27,9 +32,16 @@ object CompletionRequestDispatcher extends Logging {
       replyTo: ActorRef[CompletionResponse]
     )
 
+    case StreamingBackendResolved(
+      backendId: String,
+      backendResponse: LlamaBackendSupervisor.BackendResponse,
+      request: ChatCompletionRequest,
+      chunkListener: ActorRef[StreamingCompletionRequestActor.ChunkMessage]
+    )
+
     case RequestCompleted(
       requestId: String,
-      actor: ActorRef[CompletionRequestActor.Command]
+      actor: ActorRef[?]
     )
   }
 
@@ -41,7 +53,7 @@ object CompletionRequestDispatcher extends Logging {
   case class DispatcherState(
     config: AppConfig,
     backendSupervisor: ActorRef[LlamaBackendSupervisor.Command],
-    activeRequests: Map[String, ActorRef[CompletionRequestActor.Command]]
+    activeRequests: Map[String, ActorRef[?]]
   )
 
   def behavior: Behavior[Command] = Behaviors.setup { context =>
@@ -70,6 +82,27 @@ object CompletionRequestDispatcher extends Logging {
           case Right(backendConfig) =>
             val responseAdapter = context.messageAdapter[LlamaBackendSupervisor.BackendResponse] { response =>
               Command.BackendResolved(backendConfig.id, response, request, replyTo)
+            }
+
+            state.backendSupervisor ! LlamaBackendSupervisor.Command.RequestBackend(
+              backendConfig.id,
+              responseAdapter
+            )
+            Behaviors.same
+        }
+
+      case Command.HandleStreamingCompletion(request, chunkListener) =>
+        BackendResolver.resolveBackend(request.model, state.config) match {
+          case Left(error) =>
+            chunkListener ! StreamingCompletionRequestActor.ChunkMessage.Failed(
+              error.error.message,
+              Some(400)
+            )
+            Behaviors.same
+
+          case Right(backendConfig) =>
+            val responseAdapter = context.messageAdapter[LlamaBackendSupervisor.BackendResponse] { response =>
+              Command.StreamingBackendResolved(backendConfig.id, response, request, chunkListener)
             }
 
             state.backendSupervisor ! LlamaBackendSupervisor.Command.RequestBackend(
@@ -126,6 +159,52 @@ object CompletionRequestDispatcher extends Logging {
                 "service_error"
               )),
               500
+            )
+            Behaviors.same
+        }
+
+      case Command.StreamingBackendResolved(backendId, backendResponse, request, chunkListener) =>
+        backendResponse match {
+          case LlamaBackendSupervisor.BackendResponse.Starting =>
+            chunkListener ! StreamingCompletionRequestActor.ChunkMessage.Failed(
+              s"Backend '$backendId' is starting. Please retry in a few seconds.",
+              Some(503)
+            )
+            Behaviors.same
+
+          case LlamaBackendSupervisor.BackendResponse.Available(endpoint, port) =>
+            val requestId = java.util.UUID.randomUUID().toString
+            val backendConfig = state.config.backends.find(_.id == backendId).get
+
+            val endpointInfo = RequestBuilder.buildEndpointInfo(
+              backendConfig,
+              endpoint,
+              port,
+              state.config.server.request_timeout
+            )
+
+            val streamingActor = context.spawn(
+              StreamingCompletionRequestActor.behavior(
+                chunkListener,
+                context.self,
+                requestId
+              ),
+              s"streaming-completion-request-$requestId"
+            )
+
+            streamingActor ! StreamingCompletionRequestActor.Command.Execute(
+              request,
+              endpointInfo
+            )
+
+            active(state.copy(
+              activeRequests = state.activeRequests + (requestId -> streamingActor)
+            ))
+
+          case LlamaBackendSupervisor.BackendResponse.Failed(reason) =>
+            chunkListener ! StreamingCompletionRequestActor.ChunkMessage.Failed(
+              s"Backend failed: $reason",
+              Some(500)
             )
             Behaviors.same
         }
