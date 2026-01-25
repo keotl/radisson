@@ -1,11 +1,12 @@
 package radisson.actors.completion
 
+import scala.concurrent.duration._
+
+import io.circe.syntax._
+import org.apache.pekko.actor.typed.ActorSystem
 import radisson.actors.http.api.models.ChatCompletionRequest
 import radisson.config.BackendConfig
 import sttp.client4._
-import scala.concurrent.duration._
-import org.apache.pekko.actor.typed.ActorSystem
-import io.circe.syntax._
 
 object RequestBuilder {
 

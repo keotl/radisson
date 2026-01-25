@@ -2,15 +2,17 @@ package radisson.actors.http.api.routes
 
 import scala.concurrent.duration._
 
-import org.apache.pekko.actor.typed.{ActorRef, ActorSystem}
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.AskPattern._
-import org.apache.pekko.http.scaladsl.model.{StatusCode, StatusCodes}
+import org.apache.pekko.actor.typed.{ActorRef, ActorSystem}
+import org.apache.pekko.http.scaladsl.marshalling.sse.EventStreamMarshalling._
 import org.apache.pekko.http.scaladsl.model.sse.ServerSentEvent
+import org.apache.pekko.http.scaladsl.model.{StatusCode, StatusCodes}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.Route
-import org.apache.pekko.util.Timeout
-import org.apache.pekko.stream.scaladsl.Source
 import org.apache.pekko.stream.OverflowStrategy
+import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.util.Timeout
 import radisson.actors.completion.{
   CompletionRequestDispatcher,
   StreamingCompletionRequestActor
@@ -18,8 +20,6 @@ import radisson.actors.completion.{
 import radisson.actors.http.api.models._
 import radisson.config.AppConfig
 import radisson.util.JsonSupport.given
-import io.circe.syntax._
-import org.apache.pekko.http.scaladsl.marshalling.sse.EventStreamMarshalling._
 
 object ChatCompletionsRoutes {
   def routes(

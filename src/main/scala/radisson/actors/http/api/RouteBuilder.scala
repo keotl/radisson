@@ -13,8 +13,8 @@ import radisson.util.Logging
 
 object RouteBuilder extends Logging {
   def buildRoutes(
-    config: AppConfig,
-    dispatcher: ActorRef[CompletionRequestDispatcher.Command]
+      config: AppConfig,
+      dispatcher: ActorRef[CompletionRequestDispatcher.Command]
   )(using system: org.apache.pekko.actor.typed.ActorSystem[?]): Route = {
     // Exception handler for uncaught errors
     val exceptionHandler = ExceptionHandler { case ex: Exception =>

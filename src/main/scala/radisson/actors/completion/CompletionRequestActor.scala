@@ -2,20 +2,16 @@ package radisson.actors.completion
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
+
+import io.circe.parser
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import radisson.actors.http.api.models.{
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  ErrorResponse,
-  ErrorDetail
-}
 import radisson.actors.completion.RequestBuilder.EndpointInfo
+import radisson.actors.http.api.models.{ChatCompletionRequest, ChatCompletionResponse, ErrorDetail, ErrorResponse}
 import radisson.util.Logging
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend
-import io.circe.syntax._
-import io.circe.parser
 
 object CompletionRequestActor extends Logging {
 
@@ -36,47 +32,46 @@ object CompletionRequestActor extends Logging {
     given ec: scala.concurrent.ExecutionContext = context.executionContext
     given sttpBackend: Backend[Future] = HttpClientFutureBackend()
 
-    Behaviors.receiveMessage {
-      case Command.Execute =>
-        log.info("Executing completion request {}", requestId)
+    Behaviors.receiveMessage { case Command.Execute =>
+      log.info("Executing completion request {}", requestId)
 
-        val httpRequest = RequestBuilder.buildRequest(
-          request,
-          endpointInfo
-        )
+      val httpRequest = RequestBuilder.buildRequest(
+        request,
+        endpointInfo
+      )
 
-        val requestWithBody = httpRequest.body(request.asJson.noSpaces)
+      val requestWithBody = httpRequest.body(request.asJson.noSpaces)
 
-        val responseFuture =
-          requestWithBody.send(sttpBackend).flatMap { response =>
-            val bodyString = response.body match {
-              case Right(body) => body
-              case Left(body)  => body
-            }
-
-            if response.code.isSuccess then {
-              parser.decode[ChatCompletionResponse](bodyString) match {
-                case Right(completionResponse) =>
-                  Future.successful(completionResponse)
-                case Left(error) => Future.failed(error)
-              }
-            } else {
-              Future.failed(
-                new RuntimeException(
-                  s"Backend returned error: ${response.code} - $bodyString"
-                )
-              )
-            }
+      val responseFuture =
+        requestWithBody.send(sttpBackend).flatMap { response =>
+          val bodyString = response.body match {
+            case Right(body) => body
+            case Left(body)  => body
           }
 
-        context.pipeToSelf(responseFuture) {
-          case Success(response) =>
-            Command.HttpResponseReceived(Success(response))
-          case Failure(error) => Command.HttpRequestFailed(error)
+          if response.code.isSuccess then {
+            parser.decode[ChatCompletionResponse](bodyString) match {
+              case Right(completionResponse) =>
+                Future.successful(completionResponse)
+              case Left(error) => Future.failed(error)
+            }
+          } else {
+            Future.failed(
+              new RuntimeException(
+                s"Backend returned error: ${response.code} - $bodyString"
+              )
+            )
+          }
         }
 
-        executing(requestId, replyTo, dispatcher)
+      context.pipeToSelf(responseFuture) {
+        case Success(response) =>
+          Command.HttpResponseReceived(Success(response))
+        case Failure(error) => Command.HttpRequestFailed(error)
       }
+
+      executing(requestId, replyTo, dispatcher)
+    }
   }
 
   def executing(

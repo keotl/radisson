@@ -60,7 +60,8 @@ object RootSupervisor extends Logging {
           backendSupervisor
         )
 
-        given system: org.apache.pekko.actor.typed.ActorSystem[?] = context.system
+        given system: org.apache.pekko.actor.typed.ActorSystem[?] =
+          context.system
         val routes = RouteBuilder.buildRoutes(config, completionDispatcher)
 
         // Spawn HttpServerActor with supervision

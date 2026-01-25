@@ -1,15 +1,16 @@
 package radisson.actors.completion
 
-import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import org.apache.pekko.actor.typed.scaladsl.Behaviors
-import org.apache.pekko.stream.scaladsl.Source
-import org.apache.pekko.util.ByteString
-import radisson.actors.http.api.models.{ChatCompletionRequest, ChatCompletionChunk}
-import radisson.actors.completion.RequestBuilder.EndpointInfo
-import sttp.client4.pekkohttp.PekkoHttpBackend
-import sttp.client4.WebSocketStreamBackend
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
+
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.util.ByteString
+import radisson.actors.completion.RequestBuilder.EndpointInfo
+import radisson.actors.http.api.models.{ChatCompletionChunk, ChatCompletionRequest}
+import sttp.client4.WebSocketStreamBackend
+import sttp.client4.pekkohttp.PekkoHttpBackend
 
 object StreamingCompletionRequestActor {
 
@@ -21,8 +22,8 @@ object StreamingCompletionRequestActor {
 
   enum Command {
     case Execute(
-      request: ChatCompletionRequest,
-      endpointInfo: EndpointInfo
+        request: ChatCompletionRequest,
+        endpointInfo: EndpointInfo
     )
     case BackendStreamReady(source: Source[ByteString, ?])
     case ChunkReceived(chunk: ChatCompletionChunk)
@@ -31,34 +32,48 @@ object StreamingCompletionRequestActor {
   }
 
   def behavior(
-    chunkListener: ActorRef[ChunkMessage],
-    dispatcherRef: ActorRef[CompletionRequestDispatcher.Command],
-    requestId: String
-  ): Behavior[Command] = {
+      chunkListener: ActorRef[ChunkMessage],
+      dispatcherRef: ActorRef[CompletionRequestDispatcher.Command],
+      requestId: String
+  ): Behavior[Command] =
     Behaviors.setup { context =>
       import org.apache.pekko.actor.typed.scaladsl.adapter._
 
-      given classicSystem: org.apache.pekko.actor.ActorSystem = context.system.toClassic
-      given sttpBackend: WebSocketStreamBackend[Future, sttp.capabilities.pekko.PekkoStreams] = PekkoHttpBackend()
+      given classicSystem: org.apache.pekko.actor.ActorSystem =
+        context.system.toClassic
+      given sttpBackend: WebSocketStreamBackend[
+        Future,
+        sttp.capabilities.pekko.PekkoStreams
+      ] = PekkoHttpBackend()
 
       Behaviors.receiveMessage {
         case Command.Execute(request, endpointInfo) =>
           context.log.info(s"Starting streaming request $requestId")
 
-          val streamingRequest = RequestBuilder.buildStreamingRequest(request, endpointInfo)(using context.system)
+          val streamingRequest =
+            RequestBuilder.buildStreamingRequest(request, endpointInfo)(using
+              context.system
+            )
 
           context.pipeToSelf(sttpBackend.send(streamingRequest)) {
             case Success(response) if response.code.isSuccess =>
               response.body match {
                 case Right(stream) => Command.BackendStreamReady(stream)
-                case Left(error) => Command.StreamFailed(new RuntimeException(s"Failed to get stream: $error"))
+                case Left(error) =>
+                  Command.StreamFailed(
+                    new RuntimeException(s"Failed to get stream: $error")
+                  )
               }
             case Success(response) =>
               val errorMsg = response.body match {
                 case Left(msg) => msg
-                case Right(_) => "Unknown error"
+                case Right(_)  => "Unknown error"
               }
-              Command.StreamFailed(new RuntimeException(s"Backend returned error: ${response.code} - $errorMsg"))
+              Command.StreamFailed(
+                new RuntimeException(
+                  s"Backend returned error: ${response.code} - $errorMsg"
+                )
+              )
             case Failure(exception) =>
               Command.StreamFailed(exception)
           }
@@ -78,7 +93,7 @@ object StreamingCompletionRequestActor {
                 context.self ! Command.ChunkReceived(chunk)
               }
           ) {
-            case Success(_) => Command.StreamCompleted()
+            case Success(_)  => Command.StreamCompleted()
             case Failure(ex) => Command.StreamFailed(ex)
           }
 
@@ -91,15 +106,20 @@ object StreamingCompletionRequestActor {
         case Command.StreamCompleted() =>
           context.log.info(s"Stream completed for request $requestId")
           chunkListener ! ChunkMessage.Completed
-          dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(requestId, context.self)
+          dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
+            requestId,
+            context.self
+          )
           Behaviors.stopped
 
         case Command.StreamFailed(error) =>
           context.log.error(s"Stream failed for request $requestId", error)
           chunkListener ! ChunkMessage.Failed(error.getMessage)
-          dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(requestId, context.self)
+          dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
+            requestId,
+            context.self
+          )
           Behaviors.stopped
       }
     }
-  }
 }
