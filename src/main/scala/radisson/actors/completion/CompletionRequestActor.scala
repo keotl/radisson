@@ -4,11 +4,15 @@ import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 
 import io.circe.parser
-import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import radisson.actors.completion.RequestBuilder.EndpointInfo
-import radisson.actors.http.api.models.{ChatCompletionRequest, ChatCompletionResponse, ErrorDetail, ErrorResponse}
+import radisson.actors.http.api.models.{
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ErrorDetail,
+  ErrorResponse
+}
 import radisson.util.Logging
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend

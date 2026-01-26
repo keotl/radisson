@@ -8,7 +8,10 @@ import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.scaladsl.Source
 import org.apache.pekko.util.ByteString
 import radisson.actors.completion.RequestBuilder.EndpointInfo
-import radisson.actors.http.api.models.{ChatCompletionChunk, ChatCompletionRequest}
+import radisson.actors.http.api.models.{
+  ChatCompletionChunk,
+  ChatCompletionRequest
+}
 import sttp.client4.WebSocketStreamBackend
 import sttp.client4.pekkohttp.PekkoHttpBackend
 

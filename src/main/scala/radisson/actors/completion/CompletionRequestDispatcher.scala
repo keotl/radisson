@@ -1,12 +1,18 @@
 package radisson.actors.completion
 
+import scala.concurrent.duration._
+
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import radisson.actors.backend.LlamaBackendSupervisor
-import radisson.actors.http.api.models.{ChatCompletionRequest, ChatCompletionResponse, ErrorDetail, ErrorResponse}
+import radisson.actors.http.api.models.{
+  ChatCompletionRequest,
+  ChatCompletionResponse,
+  ErrorDetail,
+  ErrorResponse
+}
 import radisson.config.AppConfig
 import radisson.util.Logging
-import scala.concurrent.duration.*
 
 object CompletionRequestDispatcher extends Logging {
 
@@ -198,16 +204,17 @@ object CompletionRequestDispatcher extends Logging {
                 )
 
                 val responseAdapter =
-                  context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                    response =>
-                      Command.BackendResolved(
-                        backendId,
-                        response,
-                        request,
-                        replyTo,
-                        retryCount + 1
-                      )
-                  }
+                  context
+                    .messageAdapter[LlamaBackendSupervisor.BackendResponse] {
+                      response =>
+                        Command.BackendResolved(
+                          backendId,
+                          response,
+                          request,
+                          replyTo,
+                          retryCount + 1
+                        )
+                    }
 
                 context.scheduleOnce(
                   BackendStartRetryDelay,
@@ -298,16 +305,17 @@ object CompletionRequestDispatcher extends Logging {
                 )
 
                 val responseAdapter =
-                  context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                    response =>
-                      Command.StreamingBackendResolved(
-                        backendId,
-                        response,
-                        request,
-                        queue,
-                        retryCount + 1
-                      )
-                  }
+                  context
+                    .messageAdapter[LlamaBackendSupervisor.BackendResponse] {
+                      response =>
+                        Command.StreamingBackendResolved(
+                          backendId,
+                          response,
+                          request,
+                          queue,
+                          retryCount + 1
+                        )
+                    }
 
                 context.scheduleOnce(
                   BackendStartRetryDelay,

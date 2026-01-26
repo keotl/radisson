@@ -6,10 +6,21 @@ import radisson.config.ConfigLoader
 import radisson.util.Logging
 
 object Main extends Logging {
-  def main(args: Array[String]): Unit = {
-    log.info("Starting Radisson LLM Proxy")
+  val version = "0.1.0-SNAPSHOT"
 
-    // Parse command line arguments for config path
+  def main(args: Array[String]): Unit = {
+    if (args.contains("--help") || args.contains("-h")) {
+      printHelp()
+      System.exit(0)
+    }
+
+    if (args.contains("--version") || args.contains("-v")) {
+      println(s"radisson v$version")
+      System.exit(0)
+    }
+
+    log.info("Starting radisson LLM Proxy")
+
     val configPath = args
       .find(_.startsWith("--config="))
       .map(_.stripPrefix("--config="))
@@ -42,12 +53,27 @@ object Main extends Logging {
           system ! RootSupervisor.Command.Shutdown
         }
 
-        log.info("Radisson system initialized")
+        log.info("radisson system initialized")
 
-        // Wait for termination
         scala.concurrent.Await
           .result(system.whenTerminated, scala.concurrent.duration.Duration.Inf)
 
   }
+
+  private def printHelp(): Unit =
+    println(s"""radisson v$version
+      |
+      |Usage: radisson [OPTIONS]
+      |
+      |Options:
+      |  --config=<path>    Path to configuration file (default: config.yaml)
+      |  -h, --help         Show this help message
+      |  -v, --version      Show version information
+      |
+      |Examples:
+      |  radisson                        Run with default config
+      |  radisson --config=prod.yaml     Run with custom config
+      |  radisson --version              Show version
+      |""".stripMargin)
 
 }

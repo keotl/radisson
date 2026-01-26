@@ -2,8 +2,8 @@ package radisson.actors.completion
 
 import scala.concurrent.duration._
 
-import io.circe.syntax._
 import io.circe.Printer
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.ActorSystem
 import radisson.actors.http.api.models.ChatCompletionRequest
 import radisson.config.BackendConfig

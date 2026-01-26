@@ -2,6 +2,7 @@ val scala3Version = "3.7.4"
 lazy val pekkoVersion = "1.4.0"
 
 lazy val root = project
+  .enablePlugins(NativeImagePlugin)
   .in(file("."))
   .settings(
     name := "radisson",
@@ -10,6 +11,14 @@ lazy val root = project
     semanticdbEnabled := true,
     semanticdbVersion := scalafixSemanticdb.revision,
     scalacOptions ++= Seq("-Wunused:imports"),
+    assembly / assemblyMergeStrategy := {
+      case "module-info.class" => MergeStrategy.discard
+      case PathList("META-INF", "versions", _, "module-info.class") =>
+        MergeStrategy.discard
+      case x =>
+        val oldStrategy = (assembly / assemblyMergeStrategy).value
+        oldStrategy(x)
+    },
     libraryDependencies ++= Seq(
       // Testing
       "org.scalameta" %% "munit" % "1.0.0" % Test,
@@ -33,5 +42,20 @@ lazy val root = project
 
       // Logging (SLF4J 2.x compatible)
       "ch.qos.logback" % "logback-classic" % "1.5.12"
-    )
+    ),
+    Compile / mainClass := Some("radisson.Main"),
+    nativeImageOptions ++= Seq(
+      "--no-fallback",
+      "-H:IncludeResources=.*\\.conf",
+      "-H:IncludeResources=.*\\.xml",
+      "-H:IncludeResources=.*\\.properties",
+      "--initialize-at-run-time=org.apache.pekko",
+      "--initialize-at-run-time=com.typesafe.config",
+      "--initialize-at-build-time=scala",
+      "--initialize-at-build-time=ch.qos.logback",
+      "-H:+ReportExceptionStackTraces",
+      "--verbose"
+    ),
+    nativeImageJvm := "graalvm-java21",
+    nativeImageVersion := "21.0.2"
   )
