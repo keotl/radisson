@@ -1,8 +1,43 @@
-## sbt project compiled with Scala 3
+# Radisson
 
-### Usage
+A proxy server for OpenAI-compatible chat completion endpoints, built
+using Apache Pekko. Handles proxying to remote providers and managing
+local llama-cpp instances.
 
-This is a normal sbt project. You can compile code with `sbt compile`, run it with `sbt run`, and `sbt console` will start a Scala 3 REPL.
+## Usage
+```
+radisson --config=config.yaml
+```
 
-For more information on the sbt-dotty plugin, see the
-[scala3-example-project](https://github.com/scala/scala3-example-project/blob/main/README.md).
+See [config.example.yaml](./config.example.yaml) for available
+configuration options.
+
+## Development
+### Requirements
+
+- Scala 3.7
+- sbt 1.12
+- (Optional) llama-cpp for local backends
+
+### Building
+
+```bash
+# Compile the project
+sbt compile
+
+# Run tests
+sbt test
+
+# Build a fat JAR
+sbt assembly
+
+# Build a GraalVM native image executable
+sbt nativeImage
+
+# Running in dev mode
+sbt run -- --config=config.yaml
+
+# fix lint
+make fix-lint
+```
+
