@@ -6,7 +6,7 @@ lazy val root = project
   .in(file("."))
   .settings(
     name := "radisson",
-    version := "0.1.0-SNAPSHOT",
+    version := "0.1.1-SNAPSHOT",
     scalaVersion := scala3Version,
     semanticdbEnabled := true,
     semanticdbVersion := scalafixSemanticdb.revision,

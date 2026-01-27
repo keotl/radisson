@@ -6,7 +6,11 @@ import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.{ExceptionHandler, Route}
 import radisson.actors.completion.CompletionRequestDispatcher
 import radisson.actors.http.api.models.{ErrorDetail, ErrorResponse}
-import radisson.actors.http.api.routes.{ChatCompletionsRoutes, HealthRoutes}
+import radisson.actors.http.api.routes.{
+  ChatCompletionsRoutes,
+  HealthRoutes,
+  OllamaRoutes
+}
 import radisson.config.AppConfig
 import radisson.util.JsonSupport.given
 import radisson.util.Logging
@@ -34,6 +38,7 @@ object RouteBuilder extends Logging {
     handleExceptions(exceptionHandler) {
       concat(
         HealthRoutes.routes,
+        OllamaRoutes.routes(config),
         ChatCompletionsRoutes.routes(config, dispatcher)
       )
     }
