@@ -18,7 +18,8 @@ object LlamaBackendRunner extends Logging {
         backendId: String,
         command: String,
         port: Int,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        upstreamUrl: Option[String] = None
     )
     case Stop
     case GetStatus(replyTo: ActorRef[StatusResponse])
@@ -43,7 +44,8 @@ object LlamaBackendRunner extends Logging {
         backendId: String,
         command: String,
         port: Int,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        upstreamUrl: Option[String] = None
     )
     case Running(
         backendId: String,
@@ -62,7 +64,7 @@ object LlamaBackendRunner extends Logging {
       HttpClientFutureBackend()
 
     def idle(): Behavior[Command] = Behaviors.receiveMessage {
-      case Command.Start(backendId, command, port, replyTo) =>
+      case Command.Start(backendId, command, port, replyTo, upstreamUrl) =>
         log.info("Starting backend {} on port {}", backendId, port)
 
         val substitutedCommand = ProcessManager.substitutePort(command, port)
@@ -81,7 +83,7 @@ object LlamaBackendRunner extends Logging {
           case Failure(cause)   => Command.ProcessFailed(cause)
         }
 
-        starting(backendId, command, port, replyTo)
+        starting(backendId, command, port, replyTo, upstreamUrl)
 
       case Command.GetStatus(replyTo) =>
         replyTo ! StatusResponse.Idle
@@ -96,7 +98,8 @@ object LlamaBackendRunner extends Logging {
         backendId: String,
         command: String,
         port: Int,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        upstreamUrl: Option[String]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.ProcessStarted(process) =>
         log.info("Backend {} process started, checking health", backendId)
@@ -110,11 +113,28 @@ object LlamaBackendRunner extends Logging {
           Command.ProcessExited(exitCode.getOrElse(-1))
         }
 
+        val (healthHost, healthPort, healthPath) = upstreamUrl match {
+          case Some(baseUrl) =>
+            val healthUrl = s"$baseUrl/health"
+            val uri = new java.net.URI(healthUrl)
+            val host = uri.getHost
+            val port =
+              if (uri.getPort != -1) uri.getPort
+              else {
+                if (uri.getScheme == "https") 443 else 80
+              }
+            val path = uri.getPath
+            (host, port, path)
+          case None =>
+            ("127.0.0.1", port, "/health")
+        }
+
         val healthFuture = HealthChecker.retryHealthCheck(
-          host = "127.0.0.1",
-          port = port,
+          host = healthHost,
+          port = healthPort,
           maxAttempts = 20,
-          delay = 3.seconds
+          delay = 3.seconds,
+          path = healthPath
         )
 
         context.pipeToSelf(healthFuture) { isHealthy =>

@@ -7,11 +7,12 @@ import sttp.client4._
 
 object HealthChecker {
 
-  def checkHealth(host: String, port: Int)(implicit
+  def checkHealth(host: String, port: Int, path: String = "/health")(implicit
       backend: Backend[Future],
       ec: ExecutionContext
   ): Future[Boolean] = {
-    val uri = uri"http://$host:$port/health"
+    val healthUrl = s"http://$host:$port$path"
+    val uri = uri"$healthUrl"
 
     quickRequest
       .get(uri)
@@ -29,13 +30,14 @@ object HealthChecker {
       host: String,
       port: Int,
       maxAttempts: Int,
-      delay: FiniteDuration
+      delay: FiniteDuration,
+      path: String = "/health"
   )(implicit
       backend: Backend[Future],
       ec: ExecutionContext
   ): Future[Boolean] = {
     def attemptCheck(attemptsRemaining: Int): Future[Boolean] =
-      checkHealth(host, port).flatMap { isHealthy =>
+      checkHealth(host, port, path).flatMap { isHealthy =>
         if (isHealthy) {
           Future.successful(true)
         } else if (attemptsRemaining > 1) {

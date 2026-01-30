@@ -23,6 +23,17 @@ backends:
     resources:
       memory: "100Mi"
 
+  # Local backend - process on non-standard host/port
+  - id: "llama-custom-host"
+    type: "local"
+    command: "llama-server -m ./model.gguf --host 172.16.0.2 --port 8080"
+    upstream_url: "http://172.16.0.2:8080"
+    resources:
+      memory: "200Mi"
+    upstream_timeout: 90
+    # Chat completions will be: http://172.16.0.2:8080/v1/chat/completions
+    # Health check will be: http://172.16.0.2:8080/health
+
 
 resources:
   total_memory: "1024Mi"

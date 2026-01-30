@@ -93,23 +93,34 @@ object LlamaBackendSupervisor extends Logging {
         case Command.RequestBackend(backendId, replyTo) =>
           state.runningBackends.get(backendId) match {
             case Some(backend) =>
-              log.info(
-                "Backend {} already running on port {}",
-                backendId,
-                backend.port
-              )
-              val updatedBackend =
-                backend.copy(lastAccessTime = System.currentTimeMillis())
-              replyTo ! BackendResponse.Available(
-                s"http://127.0.0.1:${backend.port}",
-                backend.port
-              )
-              active(
-                state.copy(
-                  runningBackends =
-                    state.runningBackends.updated(backendId, updatedBackend)
-                )
-              )
+              state.config.backends.find(_.id == backendId) match {
+                case Some(backendConfig) =>
+                  val endpoint = backendConfig.upstream_url.getOrElse(
+                    s"http://127.0.0.1:${backend.port}"
+                  )
+
+                  log.info(
+                    "Backend {} already running, endpoint: {}",
+                    backendId,
+                    endpoint
+                  )
+                  val updatedBackend =
+                    backend.copy(lastAccessTime = System.currentTimeMillis())
+                  replyTo ! BackendResponse.Available(endpoint, backend.port)
+                  active(
+                    state.copy(
+                      runningBackends =
+                        state.runningBackends.updated(backendId, updatedBackend)
+                    )
+                  )
+
+                case None =>
+                  log.warn("Backend config not found for {}", backendId)
+                  replyTo ! BackendResponse.Failed(
+                    s"Backend $backendId not found in configuration"
+                  )
+                  Behaviors.same
+              }
 
             case None =>
               state.config.backends.find(_.id == backendId) match {
@@ -152,31 +163,39 @@ object LlamaBackendSupervisor extends Logging {
         case Command.BackendStarted(backendId, port, runner) =>
           state.startingBackends.get(backendId) match {
             case Some(starting) =>
-              log.info(
-                "Backend {} successfully started on port {}",
-                backendId,
-                port
-              )
+              state.config.backends.find(_.id == backendId) match {
+                case Some(backendConfig) =>
+                  val endpoint = backendConfig.upstream_url.getOrElse(
+                    s"http://127.0.0.1:$port"
+                  )
 
-              val runningBackend = RunningBackend(
-                port = port,
-                runner = runner,
-                memoryUsed = starting.memoryReserved,
-                lastAccessTime = System.currentTimeMillis()
-              )
+                  log.info(
+                    "Backend {} successfully started, endpoint: {}",
+                    backendId,
+                    endpoint
+                  )
 
-              starting.replyTo ! BackendResponse.Available(
-                s"http://127.0.0.1:$port",
-                port
-              )
+                  val runningBackend = RunningBackend(
+                    port = port,
+                    runner = runner,
+                    memoryUsed = starting.memoryReserved,
+                    lastAccessTime = System.currentTimeMillis()
+                  )
 
-              active(
-                state.copy(
-                  runningBackends =
-                    state.runningBackends + (backendId -> runningBackend),
-                  startingBackends = state.startingBackends - backendId
-                )
-              )
+                  starting.replyTo ! BackendResponse.Available(endpoint, port)
+
+                  active(
+                    state.copy(
+                      runningBackends =
+                        state.runningBackends + (backendId -> runningBackend),
+                      startingBackends = state.startingBackends - backendId
+                    )
+                  )
+
+                case None =>
+                  log.warn("Backend config not found for {}", backendId)
+                  Behaviors.same
+              }
 
             case None =>
               log.warn(
@@ -258,56 +277,125 @@ object LlamaBackendSupervisor extends Logging {
         return Behaviors.same
       }
 
-      backendConfig.resources match {
-        case Some(resources) =>
-          MemoryParser.parseMemoryString(resources.memory) match {
-            case Right(requiredMemory) =>
-              val usedMemory = calculateUsedMemory(state)
-              val availableMemory = state.totalMemory - usedMemory
-
+      backendConfig.upstream_url match {
+        case Some(upstream_url) =>
+          backendConfig.command match {
+            case Some(command) =>
               log.info(
-                "Backend {} requires {} MB, available {} MB",
+                "Backend {} spawning process and using upstream URL: {}",
                 backendId,
-                requiredMemory / (1024 * 1024),
-                availableMemory / (1024 * 1024)
+                upstream_url
               )
 
-              if (availableMemory >= requiredMemory) {
-                startBackend(
-                  context,
-                  state,
-                  backendConfig,
-                  requiredMemory,
-                  replyTo
-                )
-              } else {
-                evictAndStart(
-                  context,
-                  state,
-                  backendConfig,
-                  requiredMemory,
-                  replyTo
-                )
+              backendConfig.resources match {
+                case Some(resources) =>
+                  MemoryParser.parseMemoryString(resources.memory) match {
+                    case Right(requiredMemory) =>
+                      val usedMemory = calculateUsedMemory(state)
+                      val availableMemory = state.totalMemory - usedMemory
+
+                      if (availableMemory >= requiredMemory) {
+                        startBackendWithUpstreamUrl(
+                          context,
+                          state,
+                          backendConfig,
+                          command,
+                          upstream_url,
+                          requiredMemory,
+                          replyTo
+                        )
+                      } else {
+                        evictAndStartWithUpstreamUrl(
+                          context,
+                          state,
+                          backendConfig,
+                          command,
+                          upstream_url,
+                          requiredMemory,
+                          replyTo
+                        )
+                      }
+                    case Left(error) =>
+                      log.error(
+                        "Failed to parse memory for backend {}: {}",
+                        backendId,
+                        error
+                      )
+                      replyTo ! BackendResponse.Failed(
+                        s"Invalid memory configuration: $error"
+                      )
+                      Behaviors.same
+                  }
+                case None =>
+                  startBackendWithUpstreamUrl(
+                    context,
+                    state,
+                    backendConfig,
+                    command,
+                    upstream_url,
+                    0L,
+                    replyTo
+                  )
               }
 
-            case Left(error) =>
-              log.error(
-                "Failed to parse memory for backend {}: {}",
-                backendId,
-                error
-              )
-              replyTo ! BackendResponse.Failed(
-                s"Invalid memory configuration: $error"
-              )
+            case None =>
+              log.error("Backend {} missing command", backendId)
+              replyTo ! BackendResponse.Failed("Backend missing command")
               Behaviors.same
           }
 
         case None =>
-          log.error("Backend {} missing resources configuration", backendId)
-          replyTo ! BackendResponse.Failed(
-            "Backend missing resources configuration"
-          )
-          Behaviors.same
+          backendConfig.resources match {
+            case Some(resources) =>
+              MemoryParser.parseMemoryString(resources.memory) match {
+                case Right(requiredMemory) =>
+                  val usedMemory = calculateUsedMemory(state)
+                  val availableMemory = state.totalMemory - usedMemory
+
+                  log.info(
+                    "Backend {} requires {} MB, available {} MB",
+                    backendId,
+                    requiredMemory / (1024 * 1024),
+                    availableMemory / (1024 * 1024)
+                  )
+
+                  if (availableMemory >= requiredMemory) {
+                    startBackend(
+                      context,
+                      state,
+                      backendConfig,
+                      requiredMemory,
+                      replyTo
+                    )
+                  } else {
+                    evictAndStart(
+                      context,
+                      state,
+                      backendConfig,
+                      requiredMemory,
+                      replyTo
+                    )
+                  }
+
+                case Left(error) =>
+                  log.error(
+                    "Failed to parse memory for backend {}: {}",
+                    backendId,
+                    error
+                  )
+                  replyTo ! BackendResponse.Failed(
+                    s"Invalid memory configuration: $error"
+                  )
+                  Behaviors.same
+              }
+
+            case None =>
+              log.error("Backend {} missing resources configuration", backendId)
+              replyTo ! BackendResponse.Failed(
+                "Backend missing resources configuration"
+              )
+              Behaviors.same
+          }
       }
     }
 
@@ -416,6 +504,102 @@ object LlamaBackendSupervisor extends Logging {
           context,
           updatedState,
           backendConfig,
+          requiredMemory,
+          replyTo
+        )
+      }
+    }
+
+    def startBackendWithUpstreamUrl(
+        context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+        state: SupervisorState,
+        backendConfig: BackendConfig,
+        command: String,
+        upstream_url: String,
+        requiredMemory: Long,
+        replyTo: ActorRef[BackendResponse]
+    ): Behavior[Command] = {
+      val uniqueId = java.util.UUID.randomUUID().toString.take(8)
+      val runner = context.spawn(
+        Behaviors
+          .supervise(LlamaBackendRunner.behavior)
+          .onFailure[Exception](
+            SupervisorStrategy.restart
+              .withLimit(maxNrOfRetries = 3, withinTimeRange = 1.minute)
+          ),
+        s"backend-runner-${backendConfig.id}-$uniqueId"
+      )
+
+      runner ! LlamaBackendRunner.Command.Start(
+        backendConfig.id,
+        command,
+        0,
+        context.self,
+        Some(upstream_url)
+      )
+
+      val startingBackend = StartingBackend(
+        memoryReserved = requiredMemory,
+        replyTo = replyTo,
+        runner = runner,
+        port = 0
+      )
+
+      replyTo ! BackendResponse.Starting
+
+      active(
+        state.copy(
+          startingBackends =
+            state.startingBackends + (backendConfig.id -> startingBackend)
+        )
+      )
+    }
+
+    def evictAndStartWithUpstreamUrl(
+        context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+        state: SupervisorState,
+        backendConfig: BackendConfig,
+        command: String,
+        upstream_url: String,
+        requiredMemory: Long,
+        replyTo: ActorRef[BackendResponse]
+    ): Behavior[Command] = {
+      val toEvict = evictLRUBackends(state, requiredMemory)
+
+      if (toEvict.isEmpty) {
+        log.error(
+          "Cannot start backend {}: insufficient memory",
+          backendConfig.id
+        )
+        replyTo ! BackendResponse.Failed("Insufficient memory")
+        Behaviors.same
+      } else {
+        log.info(
+          "Evicting {} backends for {}: {}",
+          toEvict.size,
+          backendConfig.id,
+          toEvict.mkString(", ")
+        )
+
+        toEvict.foreach { backendId =>
+          state.runningBackends.get(backendId).foreach { backend =>
+            backend.runner ! LlamaBackendRunner.Command.Stop
+          }
+        }
+
+        val updatedState = state.copy(
+          runningBackends = state.runningBackends -- toEvict,
+          allocatedPorts = state.allocatedPorts -- toEvict.flatMap { id =>
+            state.runningBackends.get(id).map(_.port)
+          }
+        )
+
+        startBackendWithUpstreamUrl(
+          context,
+          updatedState,
+          backendConfig,
+          command,
+          upstream_url,
           requiredMemory,
           replyTo
         )

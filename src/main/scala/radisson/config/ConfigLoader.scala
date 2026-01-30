@@ -20,4 +20,5 @@ object ConfigLoader:
         .as[AppConfig]
         .left
         .map(e => s"Failed to decode config: ${e.getMessage}")
+      _ <- ConfigValidator.validateConfig(config)
     yield config

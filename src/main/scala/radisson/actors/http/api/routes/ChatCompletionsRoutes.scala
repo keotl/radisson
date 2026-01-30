@@ -32,71 +32,73 @@ object ChatCompletionsRoutes {
     pathPrefix("v1") {
       path("models") {
         get {
-          val response = OpenAIModelAssembler.buildModelsResponse(config.backends)
+          val response =
+            OpenAIModelAssembler.buildModelsResponse(config.backends)
           complete(response)
         }
       } ~
-      path("chat" / "completions") {
-        post {
-          entity(as[ChatCompletionRequest]) { request =>
-            validateRequest(request) match
-              case Left(error) =>
-                complete(StatusCodes.BadRequest, error)
-              case Right(_) =>
-                if request.stream.contains(true) then {
-                  val (queueRef, source) = Source
-                    .queue[StreamingCompletionRequestActor.ChunkMessage](
-                      bufferSize = 100,
-                      OverflowStrategy.backpressure
-                    )
-                    .preMaterialize()
-
-                  dispatcher ! CompletionRequestDispatcher.Command
-                    .HandleStreamingCompletion(
-                      request,
-                      queueRef
-                    )
-
-                  val sseSource = source.map {
-                    case StreamingCompletionRequestActor.ChunkMessage.Chunk(
-                          data
-                        ) =>
-                      ServerSentEvent(data.asJson.noSpaces)
-                    case StreamingCompletionRequestActor.ChunkMessage.Completed =>
-                      ServerSentEvent("[DONE]")
-                    case StreamingCompletionRequestActor.ChunkMessage
-                          .Failed(error, _) =>
-                      ServerSentEvent(
-                        ErrorResponse(
-                          ErrorDetail(error, "stream_error")
-                        ).asJson.noSpaces,
-                        eventType = Some("error")
+        path("chat" / "completions") {
+          post {
+            entity(as[ChatCompletionRequest]) { request =>
+              validateRequest(request) match
+                case Left(error) =>
+                  complete(StatusCodes.BadRequest, error)
+                case Right(_) =>
+                  if request.stream.contains(true) then {
+                    val (queueRef, source) = Source
+                      .queue[StreamingCompletionRequestActor.ChunkMessage](
+                        bufferSize = 100,
+                        OverflowStrategy.backpressure
                       )
+                      .preMaterialize()
+
+                    dispatcher ! CompletionRequestDispatcher.Command
+                      .HandleStreamingCompletion(
+                        request,
+                        queueRef
+                      )
+
+                    val sseSource = source.map {
+                      case StreamingCompletionRequestActor.ChunkMessage.Chunk(
+                            data
+                          ) =>
+                        ServerSentEvent(data.asJson.noSpaces)
+                      case StreamingCompletionRequestActor.ChunkMessage.Completed =>
+                        ServerSentEvent("[DONE]")
+                      case StreamingCompletionRequestActor.ChunkMessage
+                            .Failed(error, _) =>
+                        ServerSentEvent(
+                          ErrorResponse(
+                            ErrorDetail(error, "stream_error")
+                          ).asJson.noSpaces,
+                          eventType = Some("error")
+                        )
+                    }
+
+                    complete(sseSource)
+                  } else {
+                    val responseFuture = dispatcher
+                      .ask[CompletionRequestDispatcher.CompletionResponse](
+                        replyTo =>
+                          CompletionRequestDispatcher.Command
+                            .HandleCompletion(request, replyTo)
+                      )
+
+                    onSuccess(responseFuture) {
+                      case CompletionRequestDispatcher.CompletionResponse
+                            .Success(
+                              response
+                            ) =>
+                        complete(response)
+
+                      case CompletionRequestDispatcher.CompletionResponse
+                            .Error(error, statusCode) =>
+                        complete(StatusCode.int2StatusCode(statusCode), error)
+                    }
                   }
-
-                  complete(sseSource)
-                } else {
-                  val responseFuture = dispatcher
-                    .ask[CompletionRequestDispatcher.CompletionResponse](
-                      replyTo =>
-                        CompletionRequestDispatcher.Command
-                          .HandleCompletion(request, replyTo)
-                    )
-
-                  onSuccess(responseFuture) {
-                    case CompletionRequestDispatcher.CompletionResponse.Success(
-                          response
-                        ) =>
-                      complete(response)
-
-                    case CompletionRequestDispatcher.CompletionResponse
-                          .Error(error, statusCode) =>
-                      complete(StatusCode.int2StatusCode(statusCode), error)
-                  }
-                }
+            }
           }
         }
-      }
     }
   }
 

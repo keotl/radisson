@@ -21,6 +21,7 @@ case class BackendConfig(
     api_key: Option[String] = None,
     model: Option[String] = None,
     command: Option[String] = None,
+    upstream_url: Option[String] = None,
     resources: Option[BackendResources] = None,
     upstream_timeout: Option[Int] = None
 ) derives Codec.AsObject
