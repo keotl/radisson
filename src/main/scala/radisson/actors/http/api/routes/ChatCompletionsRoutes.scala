@@ -30,6 +30,12 @@ object ChatCompletionsRoutes {
     given timeout: Timeout = Timeout(config.server.request_timeout.seconds)
 
     pathPrefix("v1") {
+      path("models") {
+        get {
+          val response = OpenAIModelAssembler.buildModelsResponse(config.backends)
+          complete(response)
+        }
+      } ~
       path("chat" / "completions") {
         post {
           entity(as[ChatCompletionRequest]) { request =>
