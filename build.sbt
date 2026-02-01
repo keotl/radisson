@@ -2,13 +2,15 @@ val scala3Version = "3.7.4"
 lazy val pekkoVersion = "1.4.0"
 
 lazy val root = project
-  .enablePlugins(NativeImagePlugin)
+  .enablePlugins(NativeImagePlugin, BuildInfoPlugin)
   .in(file("."))
   .settings(
     name := "radisson",
     version := "0.1.1-SNAPSHOT",
     scalaVersion := scala3Version,
     semanticdbEnabled := true,
+    buildInfoKeys := Seq[BuildInfoKey](name, version, scalaVersion),
+    buildInfoPackage := "radisson",
     semanticdbVersion := scalafixSemanticdb.revision,
     scalacOptions ++= Seq("-Wunused:imports"),
     assembly / assemblyMergeStrategy := {

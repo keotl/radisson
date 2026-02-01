@@ -13,7 +13,7 @@ object HealthRoutes {
     } ~
       pathEndOrSingleSlash {
         get {
-          complete(StatusCodes.OK, "Radisson LLM Proxy")
+          complete(StatusCodes.OK, "radisson is running")
         }
       }
 

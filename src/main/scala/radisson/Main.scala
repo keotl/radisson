@@ -6,7 +6,7 @@ import radisson.config.ConfigLoader
 import radisson.util.Logging
 
 object Main extends Logging {
-  val version = "0.1.0-SNAPSHOT"
+  val version = BuildInfo.version
 
   def main(args: Array[String]): Unit = {
     if (args.contains("--help") || args.contains("-h")) {
@@ -19,7 +19,7 @@ object Main extends Logging {
       System.exit(0)
     }
 
-    log.info("Starting radisson LLM Proxy")
+    log.info(s"Starting radisson ${version}")
 
     val configPath = args
       .find(_.startsWith("--config="))
