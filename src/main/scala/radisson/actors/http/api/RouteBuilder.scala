@@ -38,7 +38,7 @@ object RouteBuilder extends Logging {
     handleExceptions(exceptionHandler) {
       concat(
         HealthRoutes.routes,
-        OllamaRoutes.routes(config),
+        OllamaRoutes.routes(config, dispatcher),
         ChatCompletionsRoutes.routes(config, dispatcher)
       )
     }
