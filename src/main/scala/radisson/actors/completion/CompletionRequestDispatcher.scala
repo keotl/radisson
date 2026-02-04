@@ -50,6 +50,7 @@ object CompletionRequestDispatcher extends Logging {
     )
 
     case HandleStreamingCompletion(
+        requestId: String,
         request: ChatCompletionRequest,
         queue: org.apache.pekko.stream.scaladsl.SourceQueueWithComplete[
           StreamingCompletionRequestActor.ChunkMessage
@@ -65,6 +66,7 @@ object CompletionRequestDispatcher extends Logging {
     )
 
     case StreamingBackendResolved(
+        requestId: String,
         backendId: String,
         backendResponse: LlamaBackendSupervisor.BackendResponse,
         request: ChatCompletionRequest,
@@ -137,7 +139,7 @@ object CompletionRequestDispatcher extends Logging {
               Behaviors.same
           }
 
-        case Command.HandleStreamingCompletion(request, queue) =>
+        case Command.HandleStreamingCompletion(requestId, request, queue) =>
           BackendResolver.resolveBackend(request.model, state.config) match {
             case Left(error) =>
               queue.offer(
@@ -154,6 +156,7 @@ object CompletionRequestDispatcher extends Logging {
                 context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
                   response =>
                     Command.StreamingBackendResolved(
+                      requestId,
                       backendConfig.id,
                       response,
                       request,
@@ -273,6 +276,7 @@ object CompletionRequestDispatcher extends Logging {
           }
 
         case Command.StreamingBackendResolved(
+              requestId,
               backendId,
               backendResponse,
               request,
@@ -309,6 +313,7 @@ object CompletionRequestDispatcher extends Logging {
                     .messageAdapter[LlamaBackendSupervisor.BackendResponse] {
                       response =>
                         Command.StreamingBackendResolved(
+                          requestId,
                           backendId,
                           response,
                           request,
@@ -329,42 +334,48 @@ object CompletionRequestDispatcher extends Logging {
 
             case LlamaBackendSupervisor.BackendResponse
                   .Available(endpoint, port) =>
-              val requestId = java.util.UUID.randomUUID().toString
-              val backendConfig =
-                state.config.backends.find(_.id == backendId).get
-
-              val endpointInfo = RequestBuilder.buildEndpointInfo(
-                backendConfig,
-                endpoint,
-                port,
-                state.config.server.request_timeout
-              )
-
-              val chunkListener = context.spawn(
-                QueueAdapter.behavior(queue),
-                s"queue-adapter-$requestId"
-              )
-
-              val streamingActor = context.spawn(
-                StreamingCompletionRequestActor.behavior(
-                  chunkListener,
-                  context.self,
+              if state.activeRequests.contains(requestId) then
+                log.debug(
+                  "Request {} already has an active streaming actor, ignoring duplicate backend resolution",
                   requestId
-                ),
-                s"streaming-completion-request-$requestId"
-              )
-
-              streamingActor ! StreamingCompletionRequestActor.Command.Execute(
-                request,
-                endpointInfo
-              )
-
-              active(
-                state.copy(
-                  activeRequests =
-                    state.activeRequests + (requestId -> streamingActor)
                 )
-              )
+                Behaviors.same
+              else
+                val backendConfig =
+                  state.config.backends.find(_.id == backendId).get
+
+                val endpointInfo = RequestBuilder.buildEndpointInfo(
+                  backendConfig,
+                  endpoint,
+                  port,
+                  state.config.server.request_timeout
+                )
+
+                val chunkListener = context.spawn(
+                  QueueAdapter.behavior(queue),
+                  s"queue-adapter-$requestId"
+                )
+
+                val streamingActor = context.spawn(
+                  StreamingCompletionRequestActor.behavior(
+                    chunkListener,
+                    context.self,
+                    requestId
+                  ),
+                  s"streaming-completion-request-$requestId"
+                )
+
+                streamingActor ! StreamingCompletionRequestActor.Command.Execute(
+                  request,
+                  endpointInfo
+                )
+
+                active(
+                  state.copy(
+                    activeRequests =
+                      state.activeRequests + (requestId -> streamingActor)
+                  )
+                )
 
             case LlamaBackendSupervisor.BackendResponse.Failed(reason) =>
               queue.offer(

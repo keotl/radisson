@@ -45,6 +45,7 @@ object ChatCompletionsRoutes {
                   complete(StatusCodes.BadRequest, error)
                 case Right(_) =>
                   if request.stream.contains(true) then {
+                    val requestId = java.util.UUID.randomUUID().toString
                     val (queueRef, source) = Source
                       .queue[StreamingCompletionRequestActor.ChunkMessage](
                         bufferSize = 100,
@@ -54,6 +55,7 @@ object ChatCompletionsRoutes {
 
                     dispatcher ! CompletionRequestDispatcher.Command
                       .HandleStreamingCompletion(
+                        requestId,
                         request,
                         queueRef
                       )

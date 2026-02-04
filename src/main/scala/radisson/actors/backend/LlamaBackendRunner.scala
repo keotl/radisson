@@ -133,7 +133,7 @@ object LlamaBackendRunner extends Logging {
           host = healthHost,
           port = healthPort,
           maxAttempts = 20,
-          delay = 3.seconds,
+          delay = 5.seconds,
           path = healthPath
         )
 
