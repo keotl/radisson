@@ -60,6 +60,10 @@ object RootSupervisor extends Logging {
           backendSupervisor
         )
 
+        backendSupervisor ! LlamaBackendSupervisor.Command.RegisterDispatcher(
+          completionDispatcher
+        )
+
         given system: org.apache.pekko.actor.typed.ActorSystem[?] =
           context.system
         val routes = RouteBuilder.buildRoutes(config, completionDispatcher)

@@ -635,6 +635,10 @@
   "fields":[{"name":"DontUnpack$lzy1"}]
 },
 {
+  "name":"radisson.actors.completion.CompletionRequestDispatcher$",
+  "fields":[{"name":"given_Ordering_QueuedRequest$lzy1"}]
+},
+{
   "name":"radisson.actors.completion.StreamingCompletionRequestActor$"
 },
 {

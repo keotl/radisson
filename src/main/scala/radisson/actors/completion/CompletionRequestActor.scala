@@ -28,6 +28,7 @@ object CompletionRequestActor extends Logging {
 
   def behavior(
       requestId: String,
+      backendId: String,
       request: ChatCompletionRequest,
       endpointInfo: EndpointInfo,
       replyTo: ActorRef[CompletionRequestDispatcher.CompletionResponse],
@@ -72,12 +73,13 @@ object CompletionRequestActor extends Logging {
         case Failure(error) => Command.HttpRequestFailed(error)
       }
 
-      executing(requestId, replyTo, dispatcher)
+      executing(requestId, backendId, replyTo, dispatcher)
     }
   }
 
   def executing(
       requestId: String,
+      backendId: String,
       replyTo: ActorRef[CompletionRequestDispatcher.CompletionResponse],
       dispatcher: ActorRef[CompletionRequestDispatcher.Command]
   ): Behavior[Command] = Behaviors.receive { (context, message) =>
@@ -88,6 +90,7 @@ object CompletionRequestActor extends Logging {
         )
         dispatcher ! CompletionRequestDispatcher.Command.RequestCompleted(
           requestId,
+          backendId,
           context.self
         )
         Behaviors.stopped
@@ -132,6 +135,7 @@ object CompletionRequestActor extends Logging {
         )
         dispatcher ! CompletionRequestDispatcher.Command.RequestCompleted(
           requestId,
+          backendId,
           context.self
         )
         Behaviors.stopped

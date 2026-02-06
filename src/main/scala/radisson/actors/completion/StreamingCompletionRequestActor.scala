@@ -37,7 +37,8 @@ object StreamingCompletionRequestActor {
   def behavior(
       chunkListener: ActorRef[ChunkMessage],
       dispatcherRef: ActorRef[CompletionRequestDispatcher.Command],
-      requestId: String
+      requestId: String,
+      backendId: String
   ): Behavior[Command] =
     Behaviors.setup { context =>
       given system: org.apache.pekko.actor.typed.ActorSystem[?] =
@@ -109,6 +110,7 @@ object StreamingCompletionRequestActor {
           chunkListener ! ChunkMessage.Completed
           dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
             requestId,
+            backendId,
             context.self
           )
           Behaviors.stopped
@@ -118,6 +120,7 @@ object StreamingCompletionRequestActor {
           chunkListener ! ChunkMessage.Failed(error.getMessage)
           dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
             requestId,
+            backendId,
             context.self
           )
           Behaviors.stopped

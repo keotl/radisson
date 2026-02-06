@@ -9,9 +9,17 @@ backends:
     command: "python3 e2e_tests/mock_backend/mock_server.py 9000"
     upstream_url: "http://127.0.0.1:9000"
     resources:
-      memory: "50Mi"
+      memory: "1000Mi"
     upstream_timeout: 10
 
+  - id: "local-mock2"
+    type: "local"
+    command: "python3 e2e_tests/mock_backend/mock_server.py 9001"
+    upstream_url: "http://127.0.0.1:9001"
+    resources:
+      memory: "1000Mi"
+
+    upstream_timeout: 10
   - id: "remote-mock"
     type: "remote"
     endpoint: "http://127.0.0.1:9000/v1"

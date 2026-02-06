@@ -22,6 +22,8 @@ object LlamaBackendSupervisor extends Logging {
     )
     case BackendFailed(backendId: String, reason: String)
     case BackendStopped(backendId: String)
+    case RegisterDispatcher(dispatcher: ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command])
+    case BackendDrained(backendId: String)
   }
 
   enum BackendResponse {
@@ -44,12 +46,28 @@ object LlamaBackendSupervisor extends Logging {
       port: Int
   )
 
+  case class DrainingBackend(
+      port: Int,
+      runner: ActorRef[LlamaBackendRunner.Command],
+      memoryUsed: Long,
+      drainingStartedAt: Long
+  )
+
+  case class PendingStart(
+      backendConfig: BackendConfig,
+      requiredMemory: Long,
+      replyTo: ActorRef[BackendResponse]
+  )
+
   case class SupervisorState(
       config: AppConfig,
       totalMemory: Long,
       runningBackends: Map[String, RunningBackend],
       startingBackends: Map[String, StartingBackend],
-      allocatedPorts: Set[Int]
+      drainingBackends: Map[String, DrainingBackend],
+      allocatedPorts: Set[Int],
+      dispatcherRef: Option[ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command]],
+      pendingStarts: List[PendingStart]
   )
 
   def behavior: Behavior[Command] = Behaviors.setup { context =>
@@ -78,7 +96,10 @@ object LlamaBackendSupervisor extends Logging {
           totalMemory = totalMemory,
           runningBackends = Map.empty,
           startingBackends = Map.empty,
-          allocatedPorts = Set.empty
+          drainingBackends = Map.empty,
+          allocatedPorts = Set.empty,
+          dispatcherRef = None,
+          pendingStarts = List.empty
         )
 
         active(initialState)
@@ -256,6 +277,63 @@ object LlamaBackendSupervisor extends Logging {
 
             case None =>
               log.warn("Cannot stop backend {}: not running", backendId)
+              Behaviors.same
+          }
+
+        case Command.RegisterDispatcher(dispatcher) =>
+          log.info("Dispatcher registered with backend supervisor")
+          active(state.copy(dispatcherRef = Some(dispatcher)))
+
+        case Command.BackendDrained(backendId) =>
+          state.drainingBackends.get(backendId) match {
+            case Some(backend) =>
+              log.info("Backend {} fully drained, stopping", backendId)
+              backend.runner ! LlamaBackendRunner.Command.Stop
+
+              val updatedState = state.copy(
+                drainingBackends = state.drainingBackends - backendId,
+                allocatedPorts = state.allocatedPorts - backend.port
+              )
+
+              state.pendingStarts.headOption match {
+                case Some(pending) =>
+                  log.info(
+                    "Processing pending start for backend {} after drain",
+                    pending.backendConfig.id
+                  )
+                  pending.backendConfig.upstream_url match {
+                    case Some(upstream_url) =>
+                      pending.backendConfig.command match {
+                        case Some(command) =>
+                          startBackendWithUpstreamUrl(
+                            context,
+                            updatedState.copy(pendingStarts = updatedState.pendingStarts.tail),
+                            pending.backendConfig,
+                            command,
+                            upstream_url,
+                            pending.requiredMemory,
+                            pending.replyTo
+                          )
+                        case None =>
+                          log.error("Pending backend {} missing command", pending.backendConfig.id)
+                          pending.replyTo ! BackendResponse.Failed("Backend missing command")
+                          active(updatedState.copy(pendingStarts = updatedState.pendingStarts.tail))
+                      }
+                    case None =>
+                      startBackend(
+                        context,
+                        updatedState.copy(pendingStarts = updatedState.pendingStarts.tail),
+                        pending.backendConfig,
+                        pending.requiredMemory,
+                        pending.replyTo
+                      )
+                  }
+                case None =>
+                  active(updatedState)
+              }
+
+            case None =>
+              log.warn("Received BackendDrained for unknown backend {}", backendId)
               Behaviors.same
           }
 
@@ -487,25 +565,35 @@ object LlamaBackendSupervisor extends Logging {
           toEvict.mkString(", ")
         )
 
-        toEvict.foreach { backendId =>
-          state.runningBackends.get(backendId).foreach { backend =>
-            backend.runner ! LlamaBackendRunner.Command.Stop
+        val drainingBackendsToAdd = toEvict.flatMap { backendId =>
+          state.runningBackends.get(backendId).map { backend =>
+            backendId -> DrainingBackend(
+              port = backend.port,
+              runner = backend.runner,
+              memoryUsed = backend.memoryUsed,
+              drainingStartedAt = System.currentTimeMillis()
+            )
+          }
+        }.toMap
+
+        state.dispatcherRef.foreach { dispatcher =>
+          toEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command.BeginDraining(backendId)
           }
         }
 
-        val updatedState = state.copy(
-          runningBackends = state.runningBackends -- toEvict,
-          allocatedPorts = state.allocatedPorts -- toEvict.flatMap { id =>
-            state.runningBackends.get(id).map(_.port)
-          }
+        val pendingStart = PendingStart(
+          backendConfig = backendConfig,
+          requiredMemory = requiredMemory,
+          replyTo = replyTo
         )
 
-        startBackend(
-          context,
-          updatedState,
-          backendConfig,
-          requiredMemory,
-          replyTo
+        active(
+          state.copy(
+            runningBackends = state.runningBackends -- toEvict,
+            drainingBackends = state.drainingBackends ++ drainingBackendsToAdd,
+            pendingStarts = state.pendingStarts :+ pendingStart
+          )
         )
       }
     }
@@ -581,27 +669,35 @@ object LlamaBackendSupervisor extends Logging {
           toEvict.mkString(", ")
         )
 
-        toEvict.foreach { backendId =>
-          state.runningBackends.get(backendId).foreach { backend =>
-            backend.runner ! LlamaBackendRunner.Command.Stop
+        val drainingBackendsToAdd = toEvict.flatMap { backendId =>
+          state.runningBackends.get(backendId).map { backend =>
+            backendId -> DrainingBackend(
+              port = backend.port,
+              runner = backend.runner,
+              memoryUsed = backend.memoryUsed,
+              drainingStartedAt = System.currentTimeMillis()
+            )
+          }
+        }.toMap
+
+        state.dispatcherRef.foreach { dispatcher =>
+          toEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command.BeginDraining(backendId)
           }
         }
 
-        val updatedState = state.copy(
-          runningBackends = state.runningBackends -- toEvict,
-          allocatedPorts = state.allocatedPorts -- toEvict.flatMap { id =>
-            state.runningBackends.get(id).map(_.port)
-          }
+        val pendingStart = PendingStart(
+          backendConfig = backendConfig,
+          requiredMemory = requiredMemory,
+          replyTo = replyTo
         )
 
-        startBackendWithUpstreamUrl(
-          context,
-          updatedState,
-          backendConfig,
-          command,
-          upstream_url,
-          requiredMemory,
-          replyTo
+        active(
+          state.copy(
+            runningBackends = state.runningBackends -- toEvict,
+            drainingBackends = state.drainingBackends ++ drainingBackendsToAdd,
+            pendingStarts = state.pendingStarts :+ pendingStart
+          )
         )
       }
     }
