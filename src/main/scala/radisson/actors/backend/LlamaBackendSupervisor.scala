@@ -22,7 +22,11 @@ object LlamaBackendSupervisor extends Logging {
     )
     case BackendFailed(backendId: String, reason: String)
     case BackendStopped(backendId: String)
-    case RegisterDispatcher(dispatcher: ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command])
+    case RegisterDispatcher(
+        dispatcher: ActorRef[
+          radisson.actors.completion.CompletionRequestDispatcher.Command
+        ]
+    )
     case BackendDrained(backendId: String)
   }
 
@@ -43,7 +47,8 @@ object LlamaBackendSupervisor extends Logging {
       memoryReserved: Long,
       replyTo: ActorRef[BackendResponse],
       runner: ActorRef[LlamaBackendRunner.Command],
-      port: Int
+      port: Int,
+      pendingEviction: Boolean = false
   )
 
   case class DrainingBackend(
@@ -66,7 +71,9 @@ object LlamaBackendSupervisor extends Logging {
       startingBackends: Map[String, StartingBackend],
       drainingBackends: Map[String, DrainingBackend],
       allocatedPorts: Set[Int],
-      dispatcherRef: Option[ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command]],
+      dispatcherRef: Option[
+        ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command]
+      ],
       pendingStarts: List[PendingStart]
   )
 
@@ -190,28 +197,57 @@ object LlamaBackendSupervisor extends Logging {
                     s"http://127.0.0.1:$port"
                   )
 
-                  log.info(
-                    "Backend {} successfully started, endpoint: {}",
-                    backendId,
-                    endpoint
-                  )
-
-                  val runningBackend = RunningBackend(
-                    port = port,
-                    runner = runner,
-                    memoryUsed = starting.memoryReserved,
-                    lastAccessTime = System.currentTimeMillis()
-                  )
-
-                  starting.replyTo ! BackendResponse.Available(endpoint, port)
-
-                  active(
-                    state.copy(
-                      runningBackends =
-                        state.runningBackends + (backendId -> runningBackend),
-                      startingBackends = state.startingBackends - backendId
+                  if (starting.pendingEviction) {
+                    log.info(
+                      "Backend {} started but pending eviction, transitioning to draining after trigger request",
+                      backendId
                     )
-                  )
+
+                    starting.replyTo ! BackendResponse.Available(endpoint, port)
+
+                    val drainingBackend = DrainingBackend(
+                      port = port,
+                      runner = runner,
+                      memoryUsed = starting.memoryReserved,
+                      drainingStartedAt = System.currentTimeMillis()
+                    )
+
+                    state.dispatcherRef.foreach { dispatcher =>
+                      dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command
+                        .BeginDraining(backendId)
+                    }
+
+                    active(
+                      state.copy(
+                        startingBackends = state.startingBackends - backendId,
+                        drainingBackends =
+                          state.drainingBackends + (backendId -> drainingBackend)
+                      )
+                    )
+                  } else {
+                    log.info(
+                      "Backend {} successfully started, endpoint: {}",
+                      backendId,
+                      endpoint
+                    )
+
+                    val runningBackend = RunningBackend(
+                      port = port,
+                      runner = runner,
+                      memoryUsed = starting.memoryReserved,
+                      lastAccessTime = System.currentTimeMillis()
+                    )
+
+                    starting.replyTo ! BackendResponse.Available(endpoint, port)
+
+                    active(
+                      state.copy(
+                        runningBackends =
+                          state.runningBackends + (backendId -> runningBackend),
+                        startingBackends = state.startingBackends - backendId
+                      )
+                    )
+                  }
 
                 case None =>
                   log.warn("Backend config not found for {}", backendId)
@@ -230,7 +266,13 @@ object LlamaBackendSupervisor extends Logging {
           state.startingBackends.get(backendId) match {
             case Some(starting) =>
               log.error("Backend {} failed to start: {}", backendId, reason)
-              starting.replyTo ! BackendResponse.Failed(reason)
+
+              if (!starting.pendingEviction) {
+                starting.replyTo ! BackendResponse.Failed(reason)
+              } else {
+                log.info("Backend {} failed during pending eviction", backendId)
+              }
+
               context.stop(starting.runner)
 
               active(
@@ -307,7 +349,9 @@ object LlamaBackendSupervisor extends Logging {
                         case Some(command) =>
                           startBackendWithUpstreamUrl(
                             context,
-                            updatedState.copy(pendingStarts = updatedState.pendingStarts.tail),
+                            updatedState.copy(pendingStarts =
+                              updatedState.pendingStarts.tail
+                            ),
                             pending.backendConfig,
                             command,
                             upstream_url,
@@ -315,14 +359,25 @@ object LlamaBackendSupervisor extends Logging {
                             pending.replyTo
                           )
                         case None =>
-                          log.error("Pending backend {} missing command", pending.backendConfig.id)
-                          pending.replyTo ! BackendResponse.Failed("Backend missing command")
-                          active(updatedState.copy(pendingStarts = updatedState.pendingStarts.tail))
+                          log.error(
+                            "Pending backend {} missing command",
+                            pending.backendConfig.id
+                          )
+                          pending.replyTo ! BackendResponse.Failed(
+                            "Backend missing command"
+                          )
+                          active(
+                            updatedState.copy(pendingStarts =
+                              updatedState.pendingStarts.tail
+                            )
+                          )
                       }
                     case None =>
                       startBackend(
                         context,
-                        updatedState.copy(pendingStarts = updatedState.pendingStarts.tail),
+                        updatedState.copy(pendingStarts =
+                          updatedState.pendingStarts.tail
+                        ),
                         pending.backendConfig,
                         pending.requiredMemory,
                         pending.replyTo
@@ -333,7 +388,10 @@ object LlamaBackendSupervisor extends Logging {
               }
 
             case None =>
-              log.warn("Received BackendDrained for unknown backend {}", backendId)
+              log.warn(
+                "Received BackendDrained for unknown backend {}",
+                backendId
+              )
               Behaviors.same
           }
 
@@ -548,24 +606,27 @@ object LlamaBackendSupervisor extends Logging {
         requiredMemory: Long,
         replyTo: ActorRef[BackendResponse]
     ): Behavior[Command] = {
-      val toEvict = evictLRUBackends(state, requiredMemory)
+      val (runningToEvict, startingToEvict) =
+        evictBackendsForMemory(state, requiredMemory)
 
-      if (toEvict.isEmpty) {
+      if (runningToEvict.isEmpty && startingToEvict.isEmpty) {
         log.error(
-          "Cannot start backend {}: insufficient memory and no backends to evict",
+          "Cannot start backend {}: insufficient memory even after evicting all backends",
           backendConfig.id
         )
         replyTo ! BackendResponse.Failed("Insufficient memory")
         Behaviors.same
       } else {
         log.info(
-          "Evicting {} backends to free memory for {}: {}",
-          toEvict.size,
+          "Evicting {} running and {} starting backends to free memory for {}: running={}, starting={}",
+          runningToEvict.size,
+          startingToEvict.size,
           backendConfig.id,
-          toEvict.mkString(", ")
+          runningToEvict.mkString(", "),
+          startingToEvict.mkString(", ")
         )
 
-        val drainingBackendsToAdd = toEvict.flatMap { backendId =>
+        val drainingBackendsToAdd = runningToEvict.flatMap { backendId =>
           state.runningBackends.get(backendId).map { backend =>
             backendId -> DrainingBackend(
               port = backend.port,
@@ -577,9 +638,20 @@ object LlamaBackendSupervisor extends Logging {
         }.toMap
 
         state.dispatcherRef.foreach { dispatcher =>
-          toEvict.foreach { backendId =>
-            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command.BeginDraining(backendId)
+          runningToEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command
+              .BeginDraining(backendId)
           }
+        }
+
+        val updatedStartingBackends = state.startingBackends.map {
+          case (id, backend) if startingToEvict.contains(id) =>
+            log.info(
+              "Marking starting backend {} for eviction after startup",
+              id
+            )
+            id -> backend.copy(pendingEviction = true)
+          case other => other
         }
 
         val pendingStart = PendingStart(
@@ -590,8 +662,9 @@ object LlamaBackendSupervisor extends Logging {
 
         active(
           state.copy(
-            runningBackends = state.runningBackends -- toEvict,
+            runningBackends = state.runningBackends -- runningToEvict,
             drainingBackends = state.drainingBackends ++ drainingBackendsToAdd,
+            startingBackends = updatedStartingBackends,
             pendingStarts = state.pendingStarts :+ pendingStart
           )
         )
@@ -652,24 +725,27 @@ object LlamaBackendSupervisor extends Logging {
         requiredMemory: Long,
         replyTo: ActorRef[BackendResponse]
     ): Behavior[Command] = {
-      val toEvict = evictLRUBackends(state, requiredMemory)
+      val (runningToEvict, startingToEvict) =
+        evictBackendsForMemory(state, requiredMemory)
 
-      if (toEvict.isEmpty) {
+      if (runningToEvict.isEmpty && startingToEvict.isEmpty) {
         log.error(
-          "Cannot start backend {}: insufficient memory",
+          "Cannot start backend {}: insufficient memory even after evicting all backends",
           backendConfig.id
         )
         replyTo ! BackendResponse.Failed("Insufficient memory")
         Behaviors.same
       } else {
         log.info(
-          "Evicting {} backends for {}: {}",
-          toEvict.size,
+          "Evicting {} running and {} starting backends to free memory for {}: running={}, starting={}",
+          runningToEvict.size,
+          startingToEvict.size,
           backendConfig.id,
-          toEvict.mkString(", ")
+          runningToEvict.mkString(", "),
+          startingToEvict.mkString(", ")
         )
 
-        val drainingBackendsToAdd = toEvict.flatMap { backendId =>
+        val drainingBackendsToAdd = runningToEvict.flatMap { backendId =>
           state.runningBackends.get(backendId).map { backend =>
             backendId -> DrainingBackend(
               port = backend.port,
@@ -681,9 +757,20 @@ object LlamaBackendSupervisor extends Logging {
         }.toMap
 
         state.dispatcherRef.foreach { dispatcher =>
-          toEvict.foreach { backendId =>
-            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command.BeginDraining(backendId)
+          runningToEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command
+              .BeginDraining(backendId)
           }
+        }
+
+        val updatedStartingBackends = state.startingBackends.map {
+          case (id, backend) if startingToEvict.contains(id) =>
+            log.info(
+              "Marking starting backend {} for eviction after startup",
+              id
+            )
+            id -> backend.copy(pendingEviction = true)
+          case other => other
         }
 
         val pendingStart = PendingStart(
@@ -694,8 +781,9 @@ object LlamaBackendSupervisor extends Logging {
 
         active(
           state.copy(
-            runningBackends = state.runningBackends -- toEvict,
+            runningBackends = state.runningBackends -- runningToEvict,
             drainingBackends = state.drainingBackends ++ drainingBackendsToAdd,
+            startingBackends = updatedStartingBackends,
             pendingStarts = state.pendingStarts :+ pendingStart
           )
         )
@@ -711,22 +799,38 @@ object LlamaBackendSupervisor extends Logging {
     runningMemory + startingMemory
   }
 
-  private def evictLRUBackends(
+  private def evictBackendsForMemory(
       state: SupervisorState,
       requiredMemory: Long
-  ): List[String] = {
-    val sortedByLRU = state.runningBackends.toList
+  ): (List[String], List[String]) = {
+    val usedMemory = calculateUsedMemory(state)
+    val availableMemory = state.totalMemory - usedMemory
+
+    if (availableMemory >= requiredMemory) {
+      return (List.empty, List.empty)
+    }
+
+    var freedMemory = availableMemory
+    val runningToEvict = scala.collection.mutable.ListBuffer[String]()
+    val startingToEvict = scala.collection.mutable.ListBuffer[String]()
+
+    val sortedRunning = state.runningBackends.toList
       .sortBy(_._2.lastAccessTime)
-
-    var freedMemory = 0L
-    val toEvict = scala.collection.mutable.ListBuffer[String]()
-
-    for ((id, backend) <- sortedByLRU if freedMemory < requiredMemory) {
-      toEvict += id
+    for ((id, backend) <- sortedRunning if freedMemory < requiredMemory) {
+      runningToEvict += id
       freedMemory += backend.memoryUsed
     }
 
-    toEvict.toList
+    if (freedMemory < requiredMemory) {
+      val sortedStarting = state.startingBackends.toList
+        .sortBy(_._1)
+      for ((id, backend) <- sortedStarting if freedMemory < requiredMemory) {
+        startingToEvict += id
+        freedMemory += backend.memoryReserved
+      }
+    }
+
+    (runningToEvict.toList, startingToEvict.toList)
   }
 
   private def findPortForBackend(

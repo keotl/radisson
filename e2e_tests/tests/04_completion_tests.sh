@@ -14,6 +14,7 @@ test_local_backend_completion() {
     else
         echo "  ✗ Local backend: Valid request returns 200 (got $http_code)"
         FAILED_TESTS=$((FAILED_TESTS + 1))
+        echo $response
     fi
 }
 

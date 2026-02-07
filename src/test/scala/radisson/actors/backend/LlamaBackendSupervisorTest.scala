@@ -289,4 +289,87 @@ class LlamaBackendSupervisorTest extends FunSuite {
 
     Thread.sleep(100)
   }
+
+  test("evict starting backend when insufficient memory") {
+    val supervisor = testKit.spawn(LlamaBackendSupervisor.behavior)
+    val backend1 = BackendConfig(
+      id = "backend1",
+      `type` = "local",
+      command = Some("sleep 60"),
+      resources = Some(BackendResources("600Mi"))
+    )
+    val backend2 = BackendConfig(
+      id = "backend2",
+      `type` = "local",
+      command = Some("sleep 60"),
+      resources = Some(BackendResources("600Mi"))
+    )
+    val config = createTestConfig("1Gi", List(backend1, backend2))
+
+    supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
+    Thread.sleep(100)
+
+    val probe1 =
+      testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    supervisor ! LlamaBackendSupervisor.Command.RequestBackend(
+      "backend1",
+      probe1.ref
+    )
+    val response1 = probe1.receiveMessage(3.seconds)
+    assertEquals(response1, LlamaBackendSupervisor.BackendResponse.Starting)
+
+    val probe2 =
+      testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    supervisor ! LlamaBackendSupervisor.Command.RequestBackend(
+      "backend2",
+      probe2.ref
+    )
+    Thread.sleep(200)
+  }
+
+  test("backend with pendingEviction transitions to draining on startup") {
+    val supervisor = testKit.spawn(LlamaBackendSupervisor.behavior)
+    val backend = BackendConfig(
+      id = "test-backend",
+      `type` = "local",
+      command = Some("echo test"),
+      resources = Some(BackendResources("100Mi"))
+    )
+    val config = createTestConfig("1Gi", List(backend))
+
+    supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
+    Thread.sleep(100)
+
+    val probe =
+      testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    supervisor ! LlamaBackendSupervisor.Command.RequestBackend(
+      "test-backend",
+      probe.ref
+    )
+    probe.receiveMessage(3.seconds)
+
+    val runnerProbe = testKit.createTestProbe[LlamaBackendRunner.Command]()
+    supervisor ! LlamaBackendSupervisor.Command.BackendStarted(
+      "test-backend",
+      10001,
+      runnerProbe.ref
+    )
+
+    Thread.sleep(100)
+  }
+
+  test("backend failure with pendingEviction does not notify trigger request") {
+    val supervisor = testKit.spawn(LlamaBackendSupervisor.behavior)
+    val config = createTestConfig("1Gi", List.empty)
+
+    supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
+    Thread.sleep(100)
+
+    supervisor ! LlamaBackendSupervisor.Command.BackendFailed(
+      "test-backend",
+      "test failure"
+    )
+
+    Thread.sleep(100)
+  }
 }

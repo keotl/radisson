@@ -41,7 +41,8 @@ object CompletionRequestDispatcher extends Logging {
       priority: RequestPriority
   )
 
-  given Ordering[QueuedRequest] = Ordering.by(req => (req.priority.value, req.queuedAt))
+  given Ordering[QueuedRequest] =
+    Ordering.by(req => (req.priority.value, req.queuedAt))
 
   private object QueueAdapter {
     def behavior(
@@ -172,8 +173,14 @@ object CompletionRequestDispatcher extends Logging {
                 priority = RequestPriority.NewBackend
               )
 
-              log.debug("Enqueueing request {} for backend {}", requestId, backendConfig.id)
-              val updatedState = state.copy(pendingQueue = state.pendingQueue.enqueue(queuedRequest))
+              log.debug(
+                "Enqueueing request {} for backend {}",
+                requestId,
+                backendConfig.id
+              )
+              val updatedState = state.copy(pendingQueue =
+                state.pendingQueue.enqueue(queuedRequest)
+              )
               context.self ! Command.ProcessQueue
               active(updatedState)
           }
@@ -201,8 +208,14 @@ object CompletionRequestDispatcher extends Logging {
                 priority = RequestPriority.NewBackend
               )
 
-              log.debug("Enqueueing streaming request {} for backend {}", requestId, backendConfig.id)
-              val updatedState = state.copy(pendingQueue = state.pendingQueue.enqueue(queuedRequest))
+              log.debug(
+                "Enqueueing streaming request {} for backend {}",
+                requestId,
+                backendConfig.id
+              )
+              val updatedState = state.copy(pendingQueue =
+                state.pendingQueue.enqueue(queuedRequest)
+              )
               context.self ! Command.ProcessQueue
               active(updatedState)
           }
@@ -291,15 +304,19 @@ object CompletionRequestDispatcher extends Logging {
 
               requestActor ! CompletionRequestActor.Command.Execute
 
-              val updatedInFlight = state.backendInFlightRequests.get(backendId) match {
-                case Some(requests) => requests + requestId
-                case None => Set(requestId)
-              }
+              val updatedInFlight =
+                state.backendInFlightRequests.get(backendId) match {
+                  case Some(requests) => requests + requestId
+                  case None           => Set(requestId)
+                }
 
               active(
                 state.copy(
                   activeRequests =
-                    state.activeRequests + (requestId -> RequestInfo(requestActor, backendId)),
+                    state.activeRequests + (requestId -> RequestInfo(
+                      requestActor,
+                      backendId
+                    )),
                   backendInFlightRequests =
                     state.backendInFlightRequests + (backendId -> updatedInFlight)
                 )
@@ -409,20 +426,25 @@ object CompletionRequestDispatcher extends Logging {
                   s"streaming-completion-request-$requestId"
                 )
 
-                streamingActor ! StreamingCompletionRequestActor.Command.Execute(
-                  request,
-                  endpointInfo
-                )
+                streamingActor ! StreamingCompletionRequestActor.Command
+                  .Execute(
+                    request,
+                    endpointInfo
+                  )
 
-                val updatedInFlight = state.backendInFlightRequests.get(backendId) match {
-                  case Some(requests) => requests + requestId
-                  case None => Set(requestId)
-                }
+                val updatedInFlight =
+                  state.backendInFlightRequests.get(backendId) match {
+                    case Some(requests) => requests + requestId
+                    case None           => Set(requestId)
+                  }
 
                 active(
                   state.copy(
                     activeRequests =
-                      state.activeRequests + (requestId -> RequestInfo(streamingActor, backendId)),
+                      state.activeRequests + (requestId -> RequestInfo(
+                        streamingActor,
+                        backendId
+                      )),
                     backendInFlightRequests =
                       state.backendInFlightRequests + (backendId -> updatedInFlight)
                   )
@@ -440,28 +462,43 @@ object CompletionRequestDispatcher extends Logging {
           }
 
         case Command.RequestCompleted(requestId, backendId, actor) =>
-          log.debug("Request {} completed for backend {}, cleaning up actor", requestId, backendId)
+          log.debug(
+            "Request {} completed for backend {}, cleaning up actor",
+            requestId,
+            backendId
+          )
           context.stop(actor)
 
-          val updatedInFlight = state.backendInFlightRequests.get(backendId) match {
-            case Some(requests) =>
-              val remaining = requests - requestId
-              if remaining.isEmpty then None else Some(remaining)
-            case None => None
-          }
+          val updatedInFlight =
+            state.backendInFlightRequests.get(backendId) match {
+              case Some(requests) =>
+                val remaining = requests - requestId
+                if remaining.isEmpty then None else Some(remaining)
+              case None => None
+            }
 
           val newState = state.copy(
             activeRequests = state.activeRequests - requestId,
             backendInFlightRequests = updatedInFlight match {
-              case Some(requests) => state.backendInFlightRequests + (backendId -> requests)
+              case Some(requests) =>
+                state.backendInFlightRequests + (backendId -> requests)
               case None => state.backendInFlightRequests - backendId
             }
           )
 
-          if state.drainingBackends.contains(backendId) && updatedInFlight.isEmpty then
-            log.info("Backend {} fully drained, notifying supervisor", backendId)
-            state.backendSupervisor ! LlamaBackendSupervisor.Command.BackendDrained(backendId)
-            val finalState = newState.copy(drainingBackends = newState.drainingBackends - backendId)
+          if state.drainingBackends.contains(
+              backendId
+            ) && updatedInFlight.isEmpty
+          then
+            log.info(
+              "Backend {} fully drained, notifying supervisor",
+              backendId
+            )
+            state.backendSupervisor ! LlamaBackendSupervisor.Command
+              .BackendDrained(backendId)
+            val finalState = newState.copy(drainingBackends =
+              newState.drainingBackends - backendId
+            )
             context.self ! Command.ProcessQueue
             active(finalState)
           else
@@ -469,8 +506,7 @@ object CompletionRequestDispatcher extends Logging {
             active(newState)
 
         case Command.ProcessQueue =>
-          if state.pendingQueue.isEmpty then
-            Behaviors.same
+          if state.pendingQueue.isEmpty then Behaviors.same
           else
             val (queuedRequest, remainingQueue) = state.pendingQueue.dequeue
             log.debug(
@@ -521,7 +557,8 @@ object CompletionRequestDispatcher extends Logging {
 
         case Command.BeginDraining(backendId) =>
           log.info("Backend {} entering draining state", backendId)
-          val updatedState = state.copy(drainingBackends = state.drainingBackends + backendId)
+          val updatedState =
+            state.copy(drainingBackends = state.drainingBackends + backendId)
           context.self ! Command.CheckDrainComplete(backendId)
           active(updatedState)
 
@@ -529,15 +566,26 @@ object CompletionRequestDispatcher extends Logging {
           if state.drainingBackends.contains(backendId) then
             state.backendInFlightRequests.get(backendId) match {
               case Some(requests) if requests.nonEmpty =>
-                log.debug("Backend {} still has {} in-flight requests", backendId, requests.size)
+                log.debug(
+                  "Backend {} still has {} in-flight requests",
+                  backendId,
+                  requests.size
+                )
                 Behaviors.same
               case _ =>
-                log.info("Backend {} has no in-flight requests, notifying supervisor", backendId)
-                state.backendSupervisor ! LlamaBackendSupervisor.Command.BackendDrained(backendId)
-                active(state.copy(drainingBackends = state.drainingBackends - backendId))
+                log.info(
+                  "Backend {} has no in-flight requests, notifying supervisor",
+                  backendId
+                )
+                state.backendSupervisor ! LlamaBackendSupervisor.Command
+                  .BackendDrained(backendId)
+                active(
+                  state.copy(drainingBackends =
+                    state.drainingBackends - backendId
+                  )
+                )
             }
-          else
-            Behaviors.same
+          else Behaviors.same
       }
 
     uninitialized()
