@@ -7,6 +7,7 @@ import org.apache.pekko.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import org.apache.pekko.http.scaladsl.Http.ServerBinding
 import radisson.actors.backend.LlamaBackendSupervisor
 import radisson.actors.completion.CompletionRequestDispatcher
+import radisson.actors.embedding.EmbeddingRequestDispatcher
 import radisson.actors.http.HttpServerActor
 import radisson.actors.http.api.RouteBuilder
 import radisson.config.AppConfig
@@ -60,13 +61,33 @@ object RootSupervisor extends Logging {
           backendSupervisor
         )
 
+        // Spawn EmbeddingRequestDispatcher with supervision
+        val embeddingDispatcher = context.spawn(
+          Behaviors
+            .supervise(EmbeddingRequestDispatcher.behavior)
+            .onFailure[Exception](
+              SupervisorStrategy.restart
+                .withLimit(maxNrOfRetries = 3, withinTimeRange = 1.minute)
+            ),
+          "embedding-dispatcher"
+        )
+
+        embeddingDispatcher ! EmbeddingRequestDispatcher.Command.Initialize(
+          config,
+          backendSupervisor
+        )
+
         backendSupervisor ! LlamaBackendSupervisor.Command.RegisterDispatcher(
           completionDispatcher
         )
 
+        backendSupervisor ! LlamaBackendSupervisor.Command.RegisterEmbeddingDispatcher(
+          embeddingDispatcher
+        )
+
         given system: org.apache.pekko.actor.typed.ActorSystem[?] =
           context.system
-        val routes = RouteBuilder.buildRoutes(config, completionDispatcher)
+        val routes = RouteBuilder.buildRoutes(config, completionDispatcher, embeddingDispatcher)
 
         // Spawn HttpServerActor with supervision
         val httpServer = context.spawn(

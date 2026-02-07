@@ -9,10 +9,18 @@ object BackendResolver {
       modelName: String,
       config: AppConfig
   ): Either[ErrorResponse, BackendConfig] =
-    config.backends.find(_.id == modelName) match {
+    resolveBackend(modelName, config, Set("local", "remote"))
+
+  def resolveBackend(
+      modelName: String,
+      config: AppConfig,
+      allowedTypes: Set[String]
+  ): Either[ErrorResponse, BackendConfig] = {
+    val filteredBackends = config.backends.filter(b => allowedTypes.contains(b.`type`))
+    filteredBackends.find(_.id == modelName) match {
       case Some(backend) => Right(backend)
       case None =>
-        val availableModels = config.backends.map(_.id).mkString(", ")
+        val availableModels = filteredBackends.map(_.id).mkString(", ")
         Left(
           ErrorResponse(
             ErrorDetail(
@@ -22,4 +30,5 @@ object BackendResolver {
           )
         )
     }
+  }
 }

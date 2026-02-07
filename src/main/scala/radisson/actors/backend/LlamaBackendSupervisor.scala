@@ -27,6 +27,11 @@ object LlamaBackendSupervisor extends Logging {
           radisson.actors.completion.CompletionRequestDispatcher.Command
         ]
     )
+    case RegisterEmbeddingDispatcher(
+        dispatcher: ActorRef[
+          radisson.actors.embedding.EmbeddingRequestDispatcher.Command
+        ]
+    )
     case BackendDrained(backendId: String)
   }
 
@@ -74,6 +79,9 @@ object LlamaBackendSupervisor extends Logging {
       dispatcherRef: Option[
         ActorRef[radisson.actors.completion.CompletionRequestDispatcher.Command]
       ],
+      embeddingDispatcherRef: Option[
+        ActorRef[radisson.actors.embedding.EmbeddingRequestDispatcher.Command]
+      ],
       pendingStarts: List[PendingStart]
   )
 
@@ -106,6 +114,7 @@ object LlamaBackendSupervisor extends Logging {
           drainingBackends = Map.empty,
           allocatedPorts = Set.empty,
           dispatcherRef = None,
+          embeddingDispatcherRef = None,
           pendingStarts = List.empty
         )
 
@@ -153,6 +162,9 @@ object LlamaBackendSupervisor extends Logging {
             case None =>
               state.config.backends.find(_.id == backendId) match {
                 case Some(backendConfig) if backendConfig.`type` == "local" =>
+                  handleLocalBackendRequest(state, backendConfig, replyTo)
+
+                case Some(backendConfig) if backendConfig.`type` == "local-embeddings" =>
                   handleLocalBackendRequest(state, backendConfig, replyTo)
 
                 case Some(backendConfig) if backendConfig.`type` == "remote" =>
@@ -325,6 +337,10 @@ object LlamaBackendSupervisor extends Logging {
         case Command.RegisterDispatcher(dispatcher) =>
           log.info("Dispatcher registered with backend supervisor")
           active(state.copy(dispatcherRef = Some(dispatcher)))
+
+        case Command.RegisterEmbeddingDispatcher(dispatcher) =>
+          log.info("Embedding dispatcher registered with backend supervisor")
+          active(state.copy(embeddingDispatcherRef = Some(dispatcher)))
 
         case Command.BackendDrained(backendId) =>
           state.drainingBackends.get(backendId) match {
@@ -644,6 +660,13 @@ object LlamaBackendSupervisor extends Logging {
           }
         }
 
+        state.embeddingDispatcherRef.foreach { dispatcher =>
+          runningToEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.embedding.EmbeddingRequestDispatcher.Command
+              .BeginDraining(backendId)
+          }
+        }
+
         val updatedStartingBackends = state.startingBackends.map {
           case (id, backend) if startingToEvict.contains(id) =>
             log.info(
@@ -759,6 +782,13 @@ object LlamaBackendSupervisor extends Logging {
         state.dispatcherRef.foreach { dispatcher =>
           runningToEvict.foreach { backendId =>
             dispatcher ! radisson.actors.completion.CompletionRequestDispatcher.Command
+              .BeginDraining(backendId)
+          }
+        }
+
+        state.embeddingDispatcherRef.foreach { dispatcher =>
+          runningToEvict.foreach { backendId =>
+            dispatcher ! radisson.actors.embedding.EmbeddingRequestDispatcher.Command
               .BeginDraining(backendId)
           }
         }

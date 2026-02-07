@@ -32,5 +32,13 @@ backends:
     model: "timeout-model"
     upstream_timeout: 2
 
+  - id: "local-embeddings-mock"
+    type: "local-embeddings"
+    command: "python3 e2e_tests/mock_backend/mock_server.py 9002"
+    upstream_url: "http://127.0.0.1:9002"
+    resources:
+      memory: "100Mi"
+    upstream_timeout: 10
+
 resources:
-  total_memory: "1024Mi"
+  total_memory: "1200Mi"

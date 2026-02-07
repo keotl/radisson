@@ -5,9 +5,11 @@ import org.apache.pekko.http.scaladsl.model.StatusCodes
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.{ExceptionHandler, Route}
 import radisson.actors.completion.CompletionRequestDispatcher
+import radisson.actors.embedding.EmbeddingRequestDispatcher
 import radisson.actors.http.api.models.{ErrorDetail, ErrorResponse}
 import radisson.actors.http.api.routes.{
   ChatCompletionsRoutes,
+  EmbeddingsRoutes,
   HealthRoutes,
   OllamaRoutes
 }
@@ -18,7 +20,8 @@ import radisson.util.Logging
 object RouteBuilder extends Logging {
   def buildRoutes(
       config: AppConfig,
-      dispatcher: ActorRef[CompletionRequestDispatcher.Command]
+      dispatcher: ActorRef[CompletionRequestDispatcher.Command],
+      embeddingDispatcher: ActorRef[EmbeddingRequestDispatcher.Command]
   )(using system: org.apache.pekko.actor.typed.ActorSystem[?]): Route = {
     // Exception handler for uncaught errors
     val exceptionHandler = ExceptionHandler { case ex: Exception =>
@@ -39,7 +42,8 @@ object RouteBuilder extends Logging {
       concat(
         HealthRoutes.routes,
         OllamaRoutes.routes(config),
-        ChatCompletionsRoutes.routes(config, dispatcher)
+        ChatCompletionsRoutes.routes(config, dispatcher),
+        EmbeddingsRoutes.routes(config, embeddingDispatcher)
       )
     }
 

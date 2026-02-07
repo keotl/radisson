@@ -36,6 +36,7 @@ object OllamaModelAssembler {
   private def formatFromType(backendType: String): String =
     backendType match {
       case "local" => "gguf"
+      case "local-embeddings" => "gguf"
       case _       => "unknown"
     }
 

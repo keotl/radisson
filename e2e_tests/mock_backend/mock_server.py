@@ -23,7 +23,53 @@ class MockBackendHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_POST(self):
-        if self.path == '/v1/chat/completions':
+        if self.path == '/v1/embeddings':
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length).decode('utf-8')
+
+            try:
+                request_data = json.loads(body)
+                input_data = request_data.get('input', '')
+
+                if isinstance(input_data, str):
+                    inputs = [input_data]
+                elif isinstance(input_data, list):
+                    inputs = input_data
+                else:
+                    inputs = []
+
+                embeddings = []
+                for i, text in enumerate(inputs):
+                    embeddings.append({
+                        "object": "embedding",
+                        "embedding": [0.1] * 1536,
+                        "index": i
+                    })
+
+                response_data = {
+                    "object": "list",
+                    "data": embeddings,
+                    "model": request_data.get('model', 'mock-embeddings'),
+                    "usage": {
+                        "prompt_tokens": sum(len(text.split()) for text in inputs),
+                        "total_tokens": sum(len(text.split()) for text in inputs)
+                    }
+                }
+
+                response_body = json.dumps(response_data).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+            except Exception as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                error_response = json.dumps({"error": str(e)}).encode('utf-8')
+                self.wfile.write(error_response)
+
+        elif self.path == '/v1/chat/completions':
             content_length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(content_length).decode('utf-8')
 

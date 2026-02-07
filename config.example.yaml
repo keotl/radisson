@@ -34,6 +34,16 @@ backends:
     # Chat completions will be: http://172.16.0.2:8080/v1/chat/completions
     # Health check will be: http://172.16.0.2:8080/health
 
+  # Local embeddings backend - for text embeddings only (NOT chat completions)
+  # This backend type can only serve /v1/embeddings requests
+  - id: "nomic-embed-text"
+    type: "local-embeddings"
+    command: "llama-embedding -m ./nomic-embed-text-v1.5.Q8_0.gguf --port {port} --host 127.0.0.1"
+    resources:
+      memory: "500Mi"
+    upstream_timeout: 30
+    # Embeddings will be: http://127.0.0.1:{port}/v1/embeddings
+
 
 resources:
   total_memory: "1024Mi"

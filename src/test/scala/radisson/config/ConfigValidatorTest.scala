@@ -139,6 +139,31 @@ class ConfigValidatorTest extends FunSuite {
     assert(result.left.toOption.get.contains("should not have 'upstream_url'"))
   }
 
+  test("validate local-embeddings backend with command") {
+    val backend = BackendConfig(
+      id = "embeddings-backend",
+      `type` = "local-embeddings",
+      command = Some("llama-embedding -m model.gguf --port {port}"),
+      resources = Some(BackendResources("100Mi"))
+    )
+
+    val result = ConfigValidator.validateBackendConfig(backend)
+    assertEquals(result, Right(()))
+  }
+
+  test("reject local-embeddings backend without command") {
+    val backend = BackendConfig(
+      id = "embeddings-backend",
+      `type` = "local-embeddings",
+      command = None,
+      resources = Some(BackendResources("100Mi"))
+    )
+
+    val result = ConfigValidator.validateBackendConfig(backend)
+    assert(result.isLeft)
+    assert(result.left.toOption.get.contains("must have 'command'"))
+  }
+
   test("reject backend with unknown type") {
     val backend = BackendConfig(
       id = "unknown-backend",

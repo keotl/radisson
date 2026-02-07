@@ -642,6 +642,10 @@
   "name":"radisson.actors.completion.StreamingCompletionRequestActor$"
 },
 {
+  "name":"radisson.actors.embedding.EmbeddingRequestDispatcher$",
+  "fields":[{"name":"given_Ordering_QueuedRequest$lzy1"}]
+},
+{
   "name":"radisson.actors.http.api.models.ChatCompletionChunk$",
   "fields":[{"name":"derived$AsObject$lzy1"}]
 },
