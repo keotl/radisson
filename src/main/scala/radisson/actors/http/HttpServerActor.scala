@@ -1,5 +1,6 @@
 package radisson.actors.http
 
+import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
@@ -7,6 +8,7 @@ import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.http.scaladsl.Http
 import org.apache.pekko.http.scaladsl.Http.ServerBinding
 import org.apache.pekko.http.scaladsl.server.Route
+import org.apache.pekko.http.scaladsl.settings.ServerSettings
 import radisson.actors.root.RootSupervisor
 import radisson.config.ServerConfig
 import radisson.util.Logging
@@ -38,8 +40,15 @@ object HttpServerActor extends Logging {
           given system: org.apache.pekko.actor.typed.ActorSystem[?] =
             context.system
 
-          val bindingFuture = Http()
+          val timeouts = ServerSettings(system).timeouts
+            .withRequestTimeout(config.request_timeout.seconds)
+            .withIdleTimeout(config.request_timeout.seconds)
+
+          val serverSettings = ServerSettings(system).withTimeouts(timeouts)
+
+          val bindingFuture: scala.concurrent.Future[ServerBinding] = Http()
             .newServerAt(config.host, config.port)
+            .withSettings(serverSettings)
             .bind(routes)
 
           context.pipeToSelf(bindingFuture) { result =>

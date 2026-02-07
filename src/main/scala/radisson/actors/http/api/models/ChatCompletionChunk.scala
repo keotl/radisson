@@ -18,5 +18,6 @@ case class ChunkChoice(
 
 case class Delta(
     role: Option[String] = None,
-    content: Option[String] = None
+    content: Option[String] = None,
+    tool_calls: Option[List[ToolCall]] = None
 ) derives Codec.AsObject

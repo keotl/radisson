@@ -81,13 +81,18 @@ object RootSupervisor extends Logging {
           completionDispatcher
         )
 
-        backendSupervisor ! LlamaBackendSupervisor.Command.RegisterEmbeddingDispatcher(
-          embeddingDispatcher
-        )
+        backendSupervisor ! LlamaBackendSupervisor.Command
+          .RegisterEmbeddingDispatcher(
+            embeddingDispatcher
+          )
 
         given system: org.apache.pekko.actor.typed.ActorSystem[?] =
           context.system
-        val routes = RouteBuilder.buildRoutes(config, completionDispatcher, embeddingDispatcher)
+        val routes = RouteBuilder.buildRoutes(
+          config,
+          completionDispatcher,
+          embeddingDispatcher
+        )
 
         // Spawn HttpServerActor with supervision
         val httpServer = context.spawn(

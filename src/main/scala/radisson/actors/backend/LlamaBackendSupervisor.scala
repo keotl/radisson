@@ -164,7 +164,8 @@ object LlamaBackendSupervisor extends Logging {
                 case Some(backendConfig) if backendConfig.`type` == "local" =>
                   handleLocalBackendRequest(state, backendConfig, replyTo)
 
-                case Some(backendConfig) if backendConfig.`type` == "local-embeddings" =>
+                case Some(backendConfig)
+                    if backendConfig.`type` == "local-embeddings" =>
                   handleLocalBackendRequest(state, backendConfig, replyTo)
 
                 case Some(backendConfig) if backendConfig.`type` == "remote" =>

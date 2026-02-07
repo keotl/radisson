@@ -5,5 +5,7 @@ import io.circe.Codec
 case class Choice(
     index: Int,
     message: Message,
-    finish_reason: Option[String] // "stop", "length", "content_filter"
+    finish_reason: Option[
+      String
+    ] // "stop", "length", "content_filter", "tool_calls"
 ) derives Codec.AsObject

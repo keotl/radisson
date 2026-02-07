@@ -16,7 +16,8 @@ object BackendResolver {
       config: AppConfig,
       allowedTypes: Set[String]
   ): Either[ErrorResponse, BackendConfig] = {
-    val filteredBackends = config.backends.filter(b => allowedTypes.contains(b.`type`))
+    val filteredBackends =
+      config.backends.filter(b => allowedTypes.contains(b.`type`))
     filteredBackends.find(_.id == modelName) match {
       case Some(backend) => Right(backend)
       case None =>

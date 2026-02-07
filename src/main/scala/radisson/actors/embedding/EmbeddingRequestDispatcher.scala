@@ -262,7 +262,9 @@ object EmbeddingRequestDispatcher extends Logging {
 
         case Command.BeginDraining(backendId) =>
           log.info("Beginning drain for backend: {}", backendId)
-          active(state.copy(drainingBackends = state.drainingBackends + backendId))
+          active(
+            state.copy(drainingBackends = state.drainingBackends + backendId)
+          )
 
         case Command.CheckDrainComplete(backendId) =>
           val inFlightCount =
@@ -272,7 +274,9 @@ object EmbeddingRequestDispatcher extends Logging {
             log.info("Drain complete for backend: {}", backendId)
             state.backendSupervisor ! LlamaBackendSupervisor.Command
               .BackendDrained(backendId)
-            active(state.copy(drainingBackends = state.drainingBackends - backendId))
+            active(
+              state.copy(drainingBackends = state.drainingBackends - backendId)
+            )
           } else {
             log.debug(
               "Drain in progress for backend: {} ({} requests remaining)",

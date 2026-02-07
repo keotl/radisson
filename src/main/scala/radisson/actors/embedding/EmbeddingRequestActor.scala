@@ -6,6 +6,7 @@ import scala.util.{Failure, Success, Try}
 import io.circe.parser
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import radisson.actors.completion.RequestBuilder
 import radisson.actors.completion.RequestBuilder.EndpointInfo
 import radisson.actors.http.api.models.{
   EmbeddingRequest,
@@ -13,7 +14,6 @@ import radisson.actors.http.api.models.{
   ErrorDetail,
   ErrorResponse
 }
-import radisson.actors.completion.RequestBuilder
 import radisson.util.Logging
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend
@@ -86,9 +86,10 @@ object EmbeddingRequestActor extends Logging {
   ): Behavior[Command] = Behaviors.receive { (context, message) =>
     message match {
       case Command.HttpResponseReceived(Success(response)) =>
-        replyTo ! EmbeddingRequestDispatcher.EmbeddingCompletionResponse.Success(
-          response
-        )
+        replyTo ! EmbeddingRequestDispatcher.EmbeddingCompletionResponse
+          .Success(
+            response
+          )
         dispatcher ! EmbeddingRequestDispatcher.Command.RequestCompleted(
           requestId,
           backendId,
