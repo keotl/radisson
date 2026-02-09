@@ -33,6 +33,10 @@
   "name":"[Lsttp.model.UriInterpolator$Token;"
 },
 {
+  "name":"cats.Later",
+  "fields":[{"name":"value$lzy1"}]
+},
+{
   "name":"ch.qos.logback.classic.AsyncAppender",
   "queryAllPublicMethods":true,
   "methods":[{"name":"<init>","parameterTypes":[] }]
@@ -150,6 +154,10 @@
 {
   "name":"io.circe.Encoder$",
   "fields":[{"name":"currencyEncoder$lzy1"}, {"name":"encodeDuration$lzy1"}, {"name":"encodeInstant$lzy1"}, {"name":"encodeJavaBigDecimal$lzy1"}, {"name":"encodeJavaBigInteger$lzy1"}, {"name":"encodeJavaBoolean$lzy1"}, {"name":"encodeJavaByte$lzy1"}, {"name":"encodeJavaCharacter$lzy1"}, {"name":"encodeJavaDouble$lzy1"}, {"name":"encodeJavaFloat$lzy1"}, {"name":"encodeJavaInteger$lzy1"}, {"name":"encodeJavaLong$lzy1"}, {"name":"encodeJavaShort$lzy1"}, {"name":"encodeLocalDate$lzy1"}, {"name":"encodeLocalDateTime$lzy1"}, {"name":"encodeLocalTime$lzy1"}, {"name":"encodeMonthDay$lzy1"}, {"name":"encodeOffsetDateTime$lzy1"}, {"name":"encodeOffsetTime$lzy1"}, {"name":"encodePeriod$lzy1"}, {"name":"encodeURI$lzy1"}, {"name":"encodeUUID$lzy1"}, {"name":"encodeYear$lzy1"}, {"name":"encodeYearMonth$lzy1"}, {"name":"encodeZoneId$lzy1"}, {"name":"encodeZoneOffset$lzy1"}, {"name":"encodeZonedDateTime$lzy1"}]
+},
+{
+  "name":"io.circe.JsonDecimal",
+  "fields":[{"name":"toBiggerDecimal$lzy1"}]
 },
 {
   "name":"io.circe.derivation.ConfiguredCodec$$anon$3",
@@ -646,6 +654,14 @@
   "fields":[{"name":"given_Ordering_QueuedRequest$lzy1"}]
 },
 {
+  "name":"radisson.actors.http.api.models.AcquireHoldRequest$",
+  "fields":[{"name":"derived$AsObject$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.AcquireHoldResponse$",
+  "fields":[{"name":"derived$AsObject$lzy2"}]
+},
+{
   "name":"radisson.actors.http.api.models.ChatCompletionChunk$",
   "fields":[{"name":"derived$AsObject$lzy1"}]
 },
@@ -668,6 +684,26 @@
 {
   "name":"radisson.actors.http.api.models.Delta$",
   "fields":[{"name":"derived$AsObject$lzy3"}]
+},
+{
+  "name":"radisson.actors.http.api.models.EmbeddingInput$",
+  "fields":[{"name":"given_Decoder_EmbeddingInput$lzy1"}, {"name":"given_Encoder_EmbeddingInput$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.EmbeddingObject$",
+  "fields":[{"name":"derived$AsObject$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.EmbeddingRequest$",
+  "fields":[{"name":"derived$AsObject$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.EmbeddingResponse$",
+  "fields":[{"name":"derived$AsObject$lzy3"}]
+},
+{
+  "name":"radisson.actors.http.api.models.EmbeddingUsage$",
+  "fields":[{"name":"derived$AsObject$lzy2"}]
 },
 {
   "name":"radisson.actors.http.api.models.ErrorDetail$",
@@ -700,6 +736,22 @@
 {
   "name":"radisson.actors.http.api.models.OllamaTagsResponse$",
   "fields":[{"name":"derived$AsObject$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.ReleaseHoldResponse$",
+  "fields":[{"name":"derived$AsObject$lzy3"}]
+},
+{
+  "name":"radisson.actors.http.api.models.Tool$",
+  "fields":[{"name":"derived$AsObject$lzy1"}]
+},
+{
+  "name":"radisson.actors.http.api.models.ToolCall$",
+  "fields":[{"name":"derived$AsObject$lzy3"}]
+},
+{
+  "name":"radisson.actors.http.api.models.ToolChoice$",
+  "fields":[{"name":"derived$AsObject$lzy7"}, {"name":"given_Decoder_ToolChoice$lzy1"}, {"name":"given_Encoder_ToolChoice$lzy1"}]
 },
 {
   "name":"radisson.actors.http.api.models.Usage$",

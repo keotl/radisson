@@ -9,7 +9,9 @@ import radisson.config.BackendConfig
 object OllamaModelAssembler {
   def buildOllamaResponse(backends: List[BackendConfig]): OllamaTagsResponse =
     OllamaTagsResponse(
-      models = backends.map(backendToOllamaModel)
+      models = backends
+        .filter(_.`type` != "local-stub")
+        .map(backendToOllamaModel)
     )
 
   def backendToOllamaModel(backend: BackendConfig): OllamaModel = {

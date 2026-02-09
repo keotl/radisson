@@ -33,6 +33,16 @@ object LlamaBackendSupervisor extends Logging {
         ]
     )
     case BackendDrained(backendId: String)
+    case AcquireHold(
+        backendId: String,
+        ttlSeconds: Int,
+        replyTo: ActorRef[HoldResponse]
+    )
+    case ReleaseHold(
+        backendId: String,
+        replyTo: ActorRef[HoldResponse]
+    )
+    case CleanExpiredHolds
   }
 
   enum BackendResponse {
@@ -40,6 +50,28 @@ object LlamaBackendSupervisor extends Logging {
     case Starting
     case Failed(reason: String)
   }
+
+  enum HoldResponse {
+    case Acquired(
+        backendId: String,
+        backendType: String,
+        status: String,
+        port: Int,
+        endpoint: String,
+        acquiredAt: Long,
+        expiresAt: Long
+    )
+    case Released(backendId: String, releasedAt: Long)
+    case NotFound(backendId: String)
+    case InsufficientMemory(backendId: String, requiredMemory: Long)
+    case Failed(backendId: String, reason: String)
+  }
+
+  case class BackendHold(
+      backendId: String,
+      acquiredAt: Long,
+      expiresAt: Long
+  )
 
   case class RunningBackend(
       port: Int,
@@ -82,48 +114,53 @@ object LlamaBackendSupervisor extends Logging {
       embeddingDispatcherRef: Option[
         ActorRef[radisson.actors.embedding.EmbeddingRequestDispatcher.Command]
       ],
-      pendingStarts: List[PendingStart]
+      pendingStarts: List[PendingStart],
+      heldBackends: Map[String, BackendHold]
   )
 
-  def behavior: Behavior[Command] = Behaviors.setup { context =>
-    def uninitialized(): Behavior[Command] = Behaviors.receiveMessage {
-      case Command.Initialize(config) =>
-        log.info("Initializing LlamaBackendSupervisor with config")
+  def behavior: Behavior[Command] = Behaviors.withTimers { timers =>
+    Behaviors.setup { context =>
+      def uninitialized(): Behavior[Command] = Behaviors.receiveMessage {
+        case Command.Initialize(config) =>
+          log.info("Initializing LlamaBackendSupervisor with config")
 
-        val totalMemory = MemoryParser
-          .parseMemoryString(config.resources.total_memory)
-          .getOrElse {
-            log.error(
-              "Failed to parse total_memory: {}, defaulting to 1GB",
-              config.resources.total_memory
-            )
-            1024L * 1024L * 1024L
-          }
+          val totalMemory = MemoryParser
+            .parseMemoryString(config.resources.total_memory)
+            .getOrElse {
+              log.error(
+                "Failed to parse total_memory: {}, defaulting to 1GB",
+                config.resources.total_memory
+              )
+              1024L * 1024L * 1024L
+            }
 
-        log.info(
-          "Total memory available: {} bytes ({} MB)",
-          totalMemory,
-          totalMemory / (1024 * 1024)
-        )
+          log.info(
+            "Total memory available: {} bytes ({} MB)",
+            totalMemory,
+            totalMemory / (1024 * 1024)
+          )
 
-        val initialState = SupervisorState(
-          config = config,
-          totalMemory = totalMemory,
-          runningBackends = Map.empty,
-          startingBackends = Map.empty,
-          drainingBackends = Map.empty,
-          allocatedPorts = Set.empty,
-          dispatcherRef = None,
-          embeddingDispatcherRef = None,
-          pendingStarts = List.empty
-        )
+          val initialState = SupervisorState(
+            config = config,
+            totalMemory = totalMemory,
+            runningBackends = Map.empty,
+            startingBackends = Map.empty,
+            drainingBackends = Map.empty,
+            allocatedPorts = Set.empty,
+            dispatcherRef = None,
+            embeddingDispatcherRef = None,
+            pendingStarts = List.empty,
+            heldBackends = Map.empty
+          )
 
-        active(initialState)
+          timers.startTimerAtFixedRate(Command.CleanExpiredHolds, 30.seconds)
 
-      case _ =>
-        log.warn("Received message before initialization")
-        Behaviors.same
-    }
+          active(initialState)
+
+        case _ =>
+          log.warn("Received message before initialization")
+          Behaviors.same
+      }
 
     def active(state: SupervisorState): Behavior[Command] =
       Behaviors.receiveMessage {
@@ -410,6 +447,166 @@ object LlamaBackendSupervisor extends Logging {
                 backendId
               )
               Behaviors.same
+          }
+
+        case Command.AcquireHold(backendId, ttlSeconds, replyTo) =>
+          state.config.backends.find(_.id == backendId) match {
+            case None =>
+              log.warn("Cannot acquire hold on unknown backend {}", backendId)
+              replyTo ! HoldResponse.NotFound(backendId)
+              Behaviors.same
+
+            case Some(backendConfig) =>
+              val currentTime = System.currentTimeMillis() / 1000
+              val expiresAt = currentTime + ttlSeconds
+
+              state.runningBackends.get(backendId) match {
+                case Some(backend) =>
+                  val endpoint = backendConfig.upstream_url.getOrElse(
+                    s"http://127.0.0.1:${backend.port}"
+                  )
+
+                  log.info(
+                    "Backend {} already running, acquiring hold (expires at {})",
+                    backendId,
+                    expiresAt
+                  )
+
+                  val hold = BackendHold(backendId, currentTime, expiresAt)
+                  replyTo ! HoldResponse.Acquired(
+                    backendId = backendId,
+                    backendType = backendConfig.`type`,
+                    status = "running",
+                    port = backend.port,
+                    endpoint = endpoint,
+                    acquiredAt = currentTime,
+                    expiresAt = expiresAt
+                  )
+
+                  active(
+                    state.copy(
+                      heldBackends = state.heldBackends + (backendId -> hold)
+                    )
+                  )
+
+                case None =>
+                  if (
+                    backendConfig.`type` == "local" || backendConfig.`type` == "local-stub"
+                  ) {
+                    backendConfig.resources match {
+                      case Some(resources) =>
+                        MemoryParser.parseMemoryString(resources.memory) match {
+                          case Right(requiredMemory) =>
+                            val usedMemory = calculateUsedMemory(state)
+                            val availableMemory = state.totalMemory - usedMemory
+
+                            if (availableMemory >= requiredMemory) {
+                              log.info(
+                                "Acquiring hold and starting backend {}",
+                                backendId
+                              )
+                              val hold =
+                                BackendHold(backendId, currentTime, expiresAt)
+                              val probe = context.spawn(
+                                HoldAcquireResponder.behavior(
+                                  backendId,
+                                  backendConfig,
+                                  replyTo,
+                                  currentTime,
+                                  expiresAt
+                                ),
+                                s"hold-acquire-$backendId-${java.util.UUID.randomUUID().toString.take(8)}"
+                              )
+                              handleLocalBackendRequest(
+                                state.copy(
+                                  heldBackends =
+                                    state.heldBackends + (backendId -> hold)
+                                ),
+                                backendConfig,
+                                probe
+                              )
+                            } else {
+                              log.warn(
+                                "Insufficient memory to acquire hold on backend {} (need {} MB, have {} MB)",
+                                backendId,
+                                requiredMemory / (1024 * 1024),
+                                availableMemory / (1024 * 1024)
+                              )
+                              replyTo ! HoldResponse.InsufficientMemory(
+                                backendId,
+                                requiredMemory
+                              )
+                              Behaviors.same
+                            }
+                          case Left(error) =>
+                            log.error(
+                              "Failed to parse memory for backend {}: {}",
+                              backendId,
+                              error
+                            )
+                            replyTo ! HoldResponse.Failed(
+                              backendId,
+                              s"Invalid memory configuration: $error"
+                            )
+                            Behaviors.same
+                        }
+                      case None =>
+                        log.error(
+                          "Backend {} missing resources configuration",
+                          backendId
+                        )
+                        replyTo ! HoldResponse.Failed(
+                          backendId,
+                          "Backend missing resources configuration"
+                        )
+                        Behaviors.same
+                    }
+                  } else {
+                    log.warn(
+                      "Cannot acquire hold on non-local backend {}",
+                      backendId
+                    )
+                    replyTo ! HoldResponse.Failed(
+                      backendId,
+                      "Cannot hold remote backends"
+                    )
+                    Behaviors.same
+                  }
+              }
+          }
+
+        case Command.ReleaseHold(backendId, replyTo) =>
+          val currentTime = System.currentTimeMillis() / 1000
+
+          state.heldBackends.get(backendId) match {
+            case Some(_) =>
+              log.info("Releasing hold on backend {}", backendId)
+              replyTo ! HoldResponse.Released(backendId, currentTime)
+              active(state.copy(heldBackends = state.heldBackends - backendId))
+
+            case None =>
+              log.info(
+                "Release hold on non-held backend {} (idempotent)",
+                backendId
+              )
+              replyTo ! HoldResponse.Released(backendId, currentTime)
+              Behaviors.same
+          }
+
+        case Command.CleanExpiredHolds =>
+          val currentTime = System.currentTimeMillis() / 1000
+          val expiredHolds =
+            state.heldBackends.filter(_._2.expiresAt <= currentTime)
+
+          if (expiredHolds.nonEmpty) {
+            log.info(
+              "Cleaning {} expired holds: {}",
+              expiredHolds.size,
+              expiredHolds.keys.mkString(", ")
+            )
+            active(state.copy(heldBackends = state.heldBackends -- expiredHolds.keys))
+          } else {
+            Behaviors.same
           }
 
         case _ =>
@@ -821,7 +1018,8 @@ object LlamaBackendSupervisor extends Logging {
       }
     }
 
-    uninitialized()
+      uninitialized()
+    }
   }
 
   private def calculateUsedMemory(state: SupervisorState): Long = {
@@ -841,11 +1039,17 @@ object LlamaBackendSupervisor extends Logging {
       return (List.empty, List.empty)
     }
 
+    val currentTime = System.currentTimeMillis() / 1000
+    val activeHeldBackends = state.heldBackends.filter { case (_, hold) =>
+      hold.expiresAt > currentTime
+    }.keySet
+
     var freedMemory = availableMemory
     val runningToEvict = scala.collection.mutable.ListBuffer[String]()
     val startingToEvict = scala.collection.mutable.ListBuffer[String]()
 
     val sortedRunning = state.runningBackends.toList
+      .filter { case (id, _) => !activeHeldBackends.contains(id) }
       .sortBy(_._2.lastAccessTime)
     for ((id, backend) <- sortedRunning if freedMemory < requiredMemory) {
       runningToEvict += id
@@ -854,6 +1058,7 @@ object LlamaBackendSupervisor extends Logging {
 
     if (freedMemory < requiredMemory) {
       val sortedStarting = state.startingBackends.toList
+        .filter { case (id, _) => !activeHeldBackends.contains(id) }
         .sortBy(_._1)
       for ((id, backend) <- sortedStarting if freedMemory < requiredMemory) {
         startingToEvict += id
@@ -869,4 +1074,33 @@ object LlamaBackendSupervisor extends Logging {
       backendId: String
   ): Option[Int] =
     state.runningBackends.get(backendId).map(_.port)
+
+  object HoldAcquireResponder {
+    def behavior(
+        backendId: String,
+        backendConfig: BackendConfig,
+        replyTo: ActorRef[HoldResponse],
+        acquiredAt: Long,
+        expiresAt: Long
+    ): Behavior[BackendResponse] = Behaviors.receiveMessage {
+      case BackendResponse.Available(endpoint, port) =>
+        replyTo ! HoldResponse.Acquired(
+          backendId = backendId,
+          backendType = backendConfig.`type`,
+          status = "running",
+          port = port,
+          endpoint = endpoint,
+          acquiredAt = acquiredAt,
+          expiresAt = expiresAt
+        )
+        Behaviors.stopped
+
+      case BackendResponse.Starting =>
+        Behaviors.same
+
+      case BackendResponse.Failed(reason) =>
+        replyTo ! HoldResponse.Failed(backendId, reason)
+        Behaviors.stopped
+    }
+  }
 }

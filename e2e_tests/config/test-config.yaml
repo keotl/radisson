@@ -40,5 +40,13 @@ backends:
       memory: "100Mi"
     upstream_timeout: 10
 
+  - id: "stub-warmup"
+    type: "local-stub"
+    command: "python3 e2e_tests/mock_backend/mock_server.py 9003"
+    upstream_url: "http://127.0.0.1:9003"
+    resources:
+      memory: "100Mi"
+    upstream_timeout: 10
+
 resources:
   total_memory: "1200Mi"

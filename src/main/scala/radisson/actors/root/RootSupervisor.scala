@@ -91,7 +91,8 @@ object RootSupervisor extends Logging {
         val routes = RouteBuilder.buildRoutes(
           config,
           completionDispatcher,
-          embeddingDispatcher
+          embeddingDispatcher,
+          backendSupervisor
         )
 
         // Spawn HttpServerActor with supervision

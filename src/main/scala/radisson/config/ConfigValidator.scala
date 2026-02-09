@@ -6,6 +6,7 @@ object ConfigValidator {
     backend.`type` match {
       case "local"            => validateLocalBackend(backend)
       case "local-embeddings" => validateLocalBackend(backend)
+      case "local-stub"       => validateLocalBackend(backend)
       case "remote"           => validateRemoteBackend(backend)
       case other =>
         Left(s"Backend '${backend.id}': Unknown type '$other'")

@@ -6,7 +6,9 @@ object OpenAIModelAssembler {
   def buildModelsResponse(backends: List[BackendConfig]): ListModelsResponse =
     ListModelsResponse(
       `object` = "list",
-      data = backends.map(backendToModel)
+      data = backends
+        .filter(_.`type` != "local-stub")
+        .map(backendToModel)
     )
 
   private def backendToModel(backend: BackendConfig): Model =
