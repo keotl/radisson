@@ -68,7 +68,9 @@ class ToolSerializationTest extends munit.FunSuite {
     assert(request.tool_choice.isDefined)
   }
 
-  test("serialize and deserialize ChatCompletionRequest with tools preserves data") {
+  test(
+    "serialize and deserialize ChatCompletionRequest with tools preserves data"
+  ) {
     val tool = Tool(
       `type` = "function",
       function = FunctionDefinition(
@@ -91,7 +93,10 @@ class ToolSerializationTest extends munit.FunSuite {
     assert(decoded.isRight)
     val roundtrip = decoded.toOption.get
     assert(roundtrip.tools.isDefined)
-    assert(roundtrip.tools.get.head.function.name == "get_weather", "tool name should be get_weather")
+    assert(
+      roundtrip.tools.get.head.function.name == "get_weather",
+      "tool name should be get_weather"
+    )
     assert(roundtrip.tool_choice.isDefined)
   }
 

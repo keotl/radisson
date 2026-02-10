@@ -4,26 +4,29 @@ import scala.concurrent.duration._
 
 import org.apache.pekko.actor.testkit.typed.scaladsl.ActorTestKit
 import munit.FunSuite
-import radisson.config.{AppConfig, BackendConfig, BackendResources, ResourceConfig, ServerConfig}
+import radisson.config.{
+  AppConfig,
+  BackendConfig,
+  BackendResources,
+  ResourceConfig,
+  ServerConfig
+}
 
 class BackendHoldTest extends FunSuite {
   var testKit: ActorTestKit = null
 
-  override def beforeEach(context: BeforeEach): Unit = {
+  override def beforeEach(context: BeforeEach): Unit =
     testKit = ActorTestKit()
-  }
 
-  override def afterEach(context: AfterEach): Unit = {
+  override def afterEach(context: AfterEach): Unit =
     testKit.shutdownTestKit()
-  }
 
-  private def createTestConfig(backends: List[BackendConfig]): AppConfig = {
+  private def createTestConfig(backends: List[BackendConfig]): AppConfig =
     AppConfig(
       server = ServerConfig("127.0.0.1", 8081, 120),
       backends = backends,
       resources = ResourceConfig("1Gi")
     )
-  }
 
   test("acquire hold on non-existent backend returns NotFound") {
     val config = createTestConfig(List.empty)
@@ -31,7 +34,8 @@ class BackendHoldTest extends FunSuite {
     val probe = testKit.createTestProbe[LlamaBackendSupervisor.HoldResponse]()
 
     supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
-    testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    testKit
+      .createTestProbe[LlamaBackendSupervisor.BackendResponse]()
       .awaitAssert(
         {
           supervisor ! LlamaBackendSupervisor.Command.AcquireHold(
@@ -59,7 +63,8 @@ class BackendHoldTest extends FunSuite {
     val probe = testKit.createTestProbe[LlamaBackendSupervisor.HoldResponse]()
 
     supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
-    testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    testKit
+      .createTestProbe[LlamaBackendSupervisor.BackendResponse]()
       .awaitAssert(
         {
           supervisor ! LlamaBackendSupervisor.Command.AcquireHold(
@@ -93,7 +98,8 @@ class BackendHoldTest extends FunSuite {
     val probe = testKit.createTestProbe[LlamaBackendSupervisor.HoldResponse]()
 
     supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
-    testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    testKit
+      .createTestProbe[LlamaBackendSupervisor.BackendResponse]()
       .awaitAssert(
         {
           supervisor ! LlamaBackendSupervisor.Command.AcquireHold(
@@ -120,7 +126,8 @@ class BackendHoldTest extends FunSuite {
     val probe = testKit.createTestProbe[LlamaBackendSupervisor.HoldResponse]()
 
     supervisor ! LlamaBackendSupervisor.Command.Initialize(config)
-    testKit.createTestProbe[LlamaBackendSupervisor.BackendResponse]()
+    testKit
+      .createTestProbe[LlamaBackendSupervisor.BackendResponse]()
       .awaitAssert(
         {
           supervisor ! LlamaBackendSupervisor.Command.ReleaseHold(

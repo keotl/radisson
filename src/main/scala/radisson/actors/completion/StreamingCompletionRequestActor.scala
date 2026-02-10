@@ -3,6 +3,8 @@ package radisson.actors.completion
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
+import io.circe.Json
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.stream.scaladsl.Source
@@ -12,8 +14,6 @@ import radisson.actors.http.api.models.{
   ChatCompletionChunk,
   ChatCompletionRequest
 }
-import io.circe.Json
-import io.circe.syntax._
 import radisson.actors.tracing.RequestTracer
 import sttp.client4.WebSocketStreamBackend
 import sttp.client4.pekkohttp.PekkoHttpBackend

@@ -57,7 +57,10 @@ class LocalStubBackendTest extends FunSuite {
     )
 
     val result = ConfigValidator.validateBackendConfig(backend)
-    assert(result.isLeft, "Expected validation to fail for invalid upstream_url")
+    assert(
+      result.isLeft,
+      "Expected validation to fail for invalid upstream_url"
+    )
     assert(
       result.left.exists(_.contains("must start with http://")),
       s"Expected error about invalid upstream_url, got: $result"

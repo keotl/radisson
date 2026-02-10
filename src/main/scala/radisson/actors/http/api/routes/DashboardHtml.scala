@@ -73,7 +73,7 @@ object DashboardHtml {
        |<html lang="en">
        |<head>
        |  <meta charset="UTF-8">
-       |  <title>radisson dashboard</title>
+       |  <title>radisson</title>
        |  <style>
        |    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; margin: 20px; }
        |    h1 { color: #e94560; }

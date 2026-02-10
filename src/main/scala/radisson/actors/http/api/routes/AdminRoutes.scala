@@ -4,7 +4,11 @@ import scala.concurrent.duration._
 
 import org.apache.pekko.actor.typed.ActorRef
 import org.apache.pekko.actor.typed.scaladsl.AskPattern._
-import org.apache.pekko.http.scaladsl.model.{ContentTypes, HttpEntity, StatusCodes}
+import org.apache.pekko.http.scaladsl.model.{
+  ContentTypes,
+  HttpEntity,
+  StatusCodes
+}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.Route
 import org.apache.pekko.util.Timeout
@@ -124,93 +128,96 @@ object AdminRoutes extends Logging {
             }
           }
         } ~
-        path(Segment / "release") { backendId =>
-          post {
-            val responseFuture = backendSupervisor.ask(replyTo =>
-              LlamaBackendSupervisor.Command.ReleaseHold(backendId, replyTo)
-            )
+          path(Segment / "release") { backendId =>
+            post {
+              val responseFuture = backendSupervisor.ask(replyTo =>
+                LlamaBackendSupervisor.Command.ReleaseHold(backendId, replyTo)
+              )
 
-            onSuccess(responseFuture) {
-              case LlamaBackendSupervisor.HoldResponse.Released(id, timestamp) =>
-                complete(
-                  StatusCodes.OK,
-                  ReleaseHoldResponse(
-                    backend_id = id,
-                    status = "released",
-                    released_at = timestamp
+              onSuccess(responseFuture) {
+                case LlamaBackendSupervisor.HoldResponse
+                      .Released(id, timestamp) =>
+                  complete(
+                    StatusCodes.OK,
+                    ReleaseHoldResponse(
+                      backend_id = id,
+                      status = "released",
+                      released_at = timestamp
+                    )
                   )
-                )
 
-              case LlamaBackendSupervisor.HoldResponse.NotFound(_) =>
-                complete(
-                  StatusCodes.OK,
-                  ReleaseHoldResponse(
-                    backend_id = backendId,
-                    status = "released",
-                    released_at = System.currentTimeMillis() / 1000
+                case LlamaBackendSupervisor.HoldResponse.NotFound(_) =>
+                  complete(
+                    StatusCodes.OK,
+                    ReleaseHoldResponse(
+                      backend_id = backendId,
+                      status = "released",
+                      released_at = System.currentTimeMillis() / 1000
+                    )
                   )
-                )
 
-              case _ =>
+                case _ =>
+                  complete(
+                    StatusCodes.InternalServerError,
+                    ErrorResponse(
+                      ErrorDetail(
+                        "Unexpected response from backend supervisor",
+                        "internal_error"
+                      )
+                    )
+                  )
+              }
+            }
+          }
+      } ~
+        path("status") {
+          get {
+            val responseFuture =
+              backendSupervisor.ask[LlamaBackendSupervisor.StatusResponse](
+                replyTo => LlamaBackendSupervisor.Command.GetStatus(replyTo)
+              )
+
+            onSuccess(responseFuture) { statusResponse =>
+              complete(StatusCodes.OK, statusResponse)
+            }
+          }
+        } ~
+        path("requests") {
+          get {
+            requestTracer match {
+              case Some(tracer) =>
+                val responseFuture =
+                  tracer.ask[RequestTracer.TracesResponse](replyTo =>
+                    RequestTracer.Command.GetTraces(50, replyTo)
+                  )
+
+                onSuccess(responseFuture) { tracesResponse =>
+                  complete(StatusCodes.OK, tracesResponse)
+                }
+
+              case None =>
                 complete(
-                  StatusCodes.InternalServerError,
+                  StatusCodes.NotFound,
                   ErrorResponse(
                     ErrorDetail(
-                      "Unexpected response from backend supervisor",
-                      "internal_error"
+                      "Request tracing is not enabled. Set request_tracing: true in server config.",
+                      "not_found"
                     )
                   )
                 )
             }
           }
-        }
-      } ~
-      path("status") {
-        get {
-          val responseFuture = backendSupervisor.ask[LlamaBackendSupervisor.StatusResponse](replyTo =>
-            LlamaBackendSupervisor.Command.GetStatus(replyTo)
-          )
-
-          onSuccess(responseFuture) { statusResponse =>
-            complete(StatusCodes.OK, statusResponse)
-          }
-        }
-      } ~
-      path("requests") {
-        get {
-          requestTracer match {
-            case Some(tracer) =>
-              val responseFuture = tracer.ask[RequestTracer.TracesResponse](replyTo =>
-                RequestTracer.Command.GetTraces(50, replyTo)
+        } ~
+        pathEndOrSingleSlash {
+          get {
+            complete(
+              HttpEntity(
+                ContentTypes.`text/html(UTF-8)`,
+                DashboardHtml.render(tracingEnabled)
               )
-
-              onSuccess(responseFuture) { tracesResponse =>
-                complete(StatusCodes.OK, tracesResponse)
-              }
-
-            case None =>
-              complete(
-                StatusCodes.NotFound,
-                ErrorResponse(
-                  ErrorDetail(
-                    "Request tracing is not enabled. Set request_tracing: true in server config.",
-                    "not_found"
-                  )
-                )
-              )
-          }
-        }
-      } ~
-      pathEndOrSingleSlash {
-        get {
-          complete(
-            HttpEntity(
-              ContentTypes.`text/html(UTF-8)`,
-              DashboardHtml.render(tracingEnabled)
             )
-          )
+          }
         }
-      }
     }
   }
 }

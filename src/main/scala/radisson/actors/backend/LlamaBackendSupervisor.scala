@@ -625,7 +625,9 @@ object LlamaBackendSupervisor extends Logging {
               expiredHolds.size,
               expiredHolds.keys.mkString(", ")
             )
-            active(state.copy(heldBackends = state.heldBackends -- expiredHolds.keys))
+            active(
+              state.copy(heldBackends = state.heldBackends -- expiredHolds.keys)
+            )
           } else {
             Behaviors.same
           }
@@ -1103,7 +1105,7 @@ object LlamaBackendSupervisor extends Logging {
       }
     }
 
-      uninitialized()
+    uninitialized()
     }
   }
 

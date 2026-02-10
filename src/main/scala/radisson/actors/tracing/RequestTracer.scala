@@ -1,8 +1,8 @@
 package radisson.actors.tracing
 
 import io.circe.{Codec, Json}
-import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 
 object RequestTracer {
 
@@ -37,7 +37,10 @@ object RequestTracer {
 
   def behavior: Behavior[Command] = active(List.empty, 0)
 
-  private def active(traces: List[RequestTrace], totalCaptured: Int): Behavior[Command] = {
+  private def active(
+      traces: List[RequestTrace],
+      totalCaptured: Int
+  ): Behavior[Command] =
     Behaviors.receiveMessage {
       case Command.RecordTrace(trace) =>
         val updated = (trace :: traces).take(MaxTraces)
@@ -47,5 +50,4 @@ object RequestTracer {
         replyTo ! TracesResponse(traces.take(limit), totalCaptured)
         Behaviors.same
     }
-  }
 }

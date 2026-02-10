@@ -3,8 +3,8 @@ package radisson.actors.completion
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 
-import io.circe.{Json, parser}
 import io.circe.syntax._
+import io.circe.{Json, parser}
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import radisson.actors.completion.RequestBuilder.EndpointInfo
@@ -79,7 +79,16 @@ object CompletionRequestActor extends Logging {
       }
 
       val requestBody = requestTracer.map(_ => request.asJson)
-      executing(requestId, backendId, request.model, startedAt, requestBody, replyTo, dispatcher, requestTracer)
+      executing(
+        requestId,
+        backendId,
+        request.model,
+        startedAt,
+        requestBody,
+        replyTo,
+        dispatcher,
+        requestTracer
+      )
     }
   }
 
@@ -162,8 +171,8 @@ object CompletionRequestActor extends Logging {
 
         val errorType = error match {
           case _: java.util.concurrent.TimeoutException => "timeout_error"
-          case _: io.circe.DecodingFailure              => "invalid_response_error"
-          case _                                        => "service_error"
+          case _: io.circe.DecodingFailure => "invalid_response_error"
+          case _                           => "service_error"
         }
 
         requestTracer.foreach { tracer =>

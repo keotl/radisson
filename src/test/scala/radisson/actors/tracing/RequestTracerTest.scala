@@ -8,19 +8,17 @@ import munit.FunSuite
 class RequestTracerTest extends FunSuite {
   var testKit: ActorTestKit = null
 
-  override def beforeEach(context: BeforeEach): Unit = {
+  override def beforeEach(context: BeforeEach): Unit =
     testKit = ActorTestKit()
-  }
 
-  override def afterEach(context: AfterEach): Unit = {
+  override def afterEach(context: AfterEach): Unit =
     testKit.shutdownTestKit()
-  }
 
   private def makeTrace(
       requestId: String,
       startedAt: Long = 1000L,
       completedAt: Long = 2000L
-  ): RequestTracer.RequestTrace = {
+  ): RequestTracer.RequestTrace =
     RequestTracer.RequestTrace(
       request_id = requestId,
       backend_id = "test-backend",
@@ -31,7 +29,6 @@ class RequestTracerTest extends FunSuite {
       completed_at = completedAt,
       duration_ms = completedAt - startedAt
     )
-  }
 
   test("empty initial state returns no traces") {
     val tracer = testKit.spawn(RequestTracer.behavior)
@@ -56,7 +53,10 @@ class RequestTracerTest extends FunSuite {
     val response = probe.receiveMessage(1.second)
 
     assertEquals(response.traces.size, 3)
-    assertEquals(response.traces.map(_.request_id), List("req-3", "req-2", "req-1"))
+    assertEquals(
+      response.traces.map(_.request_id),
+      List("req-3", "req-2", "req-1")
+    )
     assertEquals(response.total_captured, 3)
   }
 
@@ -64,9 +64,8 @@ class RequestTracerTest extends FunSuite {
     val tracer = testKit.spawn(RequestTracer.behavior)
     val probe = testKit.createTestProbe[RequestTracer.TracesResponse]()
 
-    for (i <- 1 to 10) {
+    for (i <- 1 to 10)
       tracer ! RequestTracer.Command.RecordTrace(makeTrace(s"req-$i"))
-    }
 
     tracer ! RequestTracer.Command.GetTraces(3, probe.ref)
     val response = probe.receiveMessage(1.second)
@@ -80,9 +79,8 @@ class RequestTracerTest extends FunSuite {
     val tracer = testKit.spawn(RequestTracer.behavior)
     val probe = testKit.createTestProbe[RequestTracer.TracesResponse]()
 
-    for (i <- 1 to 60) {
+    for (i <- 1 to 60)
       tracer ! RequestTracer.Command.RecordTrace(makeTrace(s"req-$i"))
-    }
 
     tracer ! RequestTracer.Command.GetTraces(100, probe.ref)
     val response = probe.receiveMessage(1.second)
