@@ -10,6 +10,7 @@ import radisson.actors.completion.CompletionRequestDispatcher
 import radisson.actors.embedding.EmbeddingRequestDispatcher
 import radisson.actors.http.HttpServerActor
 import radisson.actors.http.api.RouteBuilder
+import radisson.actors.tracing.RequestTracer
 import radisson.config.AppConfig
 import radisson.util.Logging
 
@@ -31,6 +32,15 @@ object RootSupervisor extends Logging {
           config.server.host,
           config.server.port
         )
+
+        val tracingEnabled = config.server.request_tracing.contains(true)
+        val requestTracer: Option[ActorRef[RequestTracer.Command]] =
+          if (tracingEnabled) {
+            log.info("Request tracing enabled, spawning RequestTracer")
+            Some(context.spawn(RequestTracer.behavior, "request-tracer"))
+          } else {
+            None
+          }
 
         // Spawn LlamaBackendSupervisor with supervision
         val backendSupervisor = context.spawn(
@@ -58,7 +68,8 @@ object RootSupervisor extends Logging {
 
         completionDispatcher ! CompletionRequestDispatcher.Command.Initialize(
           config,
-          backendSupervisor
+          backendSupervisor,
+          requestTracer
         )
 
         // Spawn EmbeddingRequestDispatcher with supervision
@@ -74,7 +85,8 @@ object RootSupervisor extends Logging {
 
         embeddingDispatcher ! EmbeddingRequestDispatcher.Command.Initialize(
           config,
-          backendSupervisor
+          backendSupervisor,
+          requestTracer
         )
 
         backendSupervisor ! LlamaBackendSupervisor.Command.RegisterDispatcher(
@@ -92,7 +104,8 @@ object RootSupervisor extends Logging {
           config,
           completionDispatcher,
           embeddingDispatcher,
-          backendSupervisor
+          backendSupervisor,
+          requestTracer
         )
 
         // Spawn HttpServerActor with supervision

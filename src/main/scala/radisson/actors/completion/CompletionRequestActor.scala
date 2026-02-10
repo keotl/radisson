@@ -3,7 +3,8 @@ package radisson.actors.completion
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 
-import io.circe.parser
+import io.circe.{Json, parser}
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import radisson.actors.completion.RequestBuilder.EndpointInfo
@@ -13,6 +14,7 @@ import radisson.actors.http.api.models.{
   ErrorDetail,
   ErrorResponse
 }
+import radisson.actors.tracing.RequestTracer
 import radisson.util.Logging
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend
@@ -32,13 +34,16 @@ object CompletionRequestActor extends Logging {
       request: ChatCompletionRequest,
       endpointInfo: EndpointInfo,
       replyTo: ActorRef[CompletionRequestDispatcher.CompletionResponse],
-      dispatcher: ActorRef[CompletionRequestDispatcher.Command]
+      dispatcher: ActorRef[CompletionRequestDispatcher.Command],
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   ): Behavior[Command] = Behaviors.setup { context =>
     given ec: scala.concurrent.ExecutionContext = context.executionContext
     given sttpBackend: Backend[Future] = HttpClientFutureBackend()
 
     Behaviors.receiveMessage { case Command.Execute =>
       log.info("Executing completion request {}", requestId)
+
+      val startedAt = System.currentTimeMillis()
 
       val httpRequest = RequestBuilder.buildRequest(
         request,
@@ -73,18 +78,44 @@ object CompletionRequestActor extends Logging {
         case Failure(error) => Command.HttpRequestFailed(error)
       }
 
-      executing(requestId, backendId, replyTo, dispatcher)
+      val requestBody = requestTracer.map(_ => request.asJson)
+      executing(requestId, backendId, request.model, startedAt, requestBody, replyTo, dispatcher, requestTracer)
     }
   }
 
   def executing(
       requestId: String,
       backendId: String,
+      model: String,
+      startedAt: Long,
+      requestBody: Option[Json],
       replyTo: ActorRef[CompletionRequestDispatcher.CompletionResponse],
-      dispatcher: ActorRef[CompletionRequestDispatcher.Command]
+      dispatcher: ActorRef[CompletionRequestDispatcher.Command],
+      requestTracer: Option[ActorRef[RequestTracer.Command]]
   ): Behavior[Command] = Behaviors.receive { (context, message) =>
     message match {
       case Command.HttpResponseReceived(Success(response)) =>
+        requestTracer.foreach { tracer =>
+          val completedAt = System.currentTimeMillis()
+          tracer ! RequestTracer.Command.RecordTrace(
+            RequestTracer.RequestTrace(
+              request_id = requestId,
+              backend_id = backendId,
+              model = model,
+              request_type = "completion",
+              status = "success",
+              started_at = startedAt,
+              completed_at = completedAt,
+              duration_ms = completedAt - startedAt,
+              prompt_tokens = Some(response.usage.prompt_tokens),
+              completion_tokens = Some(response.usage.completion_tokens),
+              total_tokens = Some(response.usage.total_tokens),
+              http_status = Some(200),
+              request_body = requestBody
+            )
+          )
+        }
+
         replyTo ! CompletionRequestDispatcher.CompletionResponse.Success(
           response
         )
@@ -127,6 +158,31 @@ object CompletionRequestActor extends Logging {
               ),
               502
             )
+        }
+
+        val errorType = error match {
+          case _: java.util.concurrent.TimeoutException => "timeout_error"
+          case _: io.circe.DecodingFailure              => "invalid_response_error"
+          case _                                        => "service_error"
+        }
+
+        requestTracer.foreach { tracer =>
+          val completedAt = System.currentTimeMillis()
+          tracer ! RequestTracer.Command.RecordTrace(
+            RequestTracer.RequestTrace(
+              request_id = requestId,
+              backend_id = backendId,
+              model = model,
+              request_type = "completion",
+              status = "error",
+              error_type = Some(errorType),
+              started_at = startedAt,
+              completed_at = completedAt,
+              duration_ms = completedAt - startedAt,
+              http_status = Some(statusCode),
+              request_body = requestBody
+            )
+          )
         }
 
         replyTo ! CompletionRequestDispatcher.CompletionResponse.Error(

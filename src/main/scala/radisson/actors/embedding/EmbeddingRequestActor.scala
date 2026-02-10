@@ -3,7 +3,8 @@ package radisson.actors.embedding
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
 
-import io.circe.parser
+import io.circe.{Json, parser}
+import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
 import radisson.actors.completion.RequestBuilder
@@ -14,6 +15,7 @@ import radisson.actors.http.api.models.{
   ErrorDetail,
   ErrorResponse
 }
+import radisson.actors.tracing.RequestTracer
 import radisson.util.Logging
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend
@@ -33,13 +35,16 @@ object EmbeddingRequestActor extends Logging {
       request: EmbeddingRequest,
       endpointInfo: EndpointInfo,
       replyTo: ActorRef[EmbeddingRequestDispatcher.EmbeddingCompletionResponse],
-      dispatcher: ActorRef[EmbeddingRequestDispatcher.Command]
+      dispatcher: ActorRef[EmbeddingRequestDispatcher.Command],
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   ): Behavior[Command] = Behaviors.setup { context =>
     given ec: scala.concurrent.ExecutionContext = context.executionContext
     given sttpBackend: Backend[Future] = HttpClientFutureBackend()
 
     Behaviors.receiveMessage { case Command.Execute =>
       log.info("Executing embedding request {}", requestId)
+
+      val startedAt = System.currentTimeMillis()
 
       val httpRequest = RequestBuilder.buildEmbeddingRequest(
         request,
@@ -74,18 +79,43 @@ object EmbeddingRequestActor extends Logging {
         case Failure(error) => Command.HttpRequestFailed(error)
       }
 
-      executing(requestId, backendId, replyTo, dispatcher)
+      val requestBody = requestTracer.map(_ => request.asJson)
+      executing(requestId, backendId, request.model, startedAt, requestBody, replyTo, dispatcher, requestTracer)
     }
   }
 
   def executing(
       requestId: String,
       backendId: String,
+      model: String,
+      startedAt: Long,
+      requestBody: Option[Json],
       replyTo: ActorRef[EmbeddingRequestDispatcher.EmbeddingCompletionResponse],
-      dispatcher: ActorRef[EmbeddingRequestDispatcher.Command]
+      dispatcher: ActorRef[EmbeddingRequestDispatcher.Command],
+      requestTracer: Option[ActorRef[RequestTracer.Command]]
   ): Behavior[Command] = Behaviors.receive { (context, message) =>
     message match {
       case Command.HttpResponseReceived(Success(response)) =>
+        requestTracer.foreach { tracer =>
+          val completedAt = System.currentTimeMillis()
+          tracer ! RequestTracer.Command.RecordTrace(
+            RequestTracer.RequestTrace(
+              request_id = requestId,
+              backend_id = backendId,
+              model = model,
+              request_type = "embedding",
+              status = "success",
+              started_at = startedAt,
+              completed_at = completedAt,
+              duration_ms = completedAt - startedAt,
+              prompt_tokens = Some(response.usage.prompt_tokens),
+              total_tokens = Some(response.usage.total_tokens),
+              http_status = Some(200),
+              request_body = requestBody
+            )
+          )
+        }
+
         replyTo ! EmbeddingRequestDispatcher.EmbeddingCompletionResponse
           .Success(
             response
@@ -129,6 +159,31 @@ object EmbeddingRequestActor extends Logging {
               ),
               502
             )
+        }
+
+        val errorType = error match {
+          case _: java.util.concurrent.TimeoutException => "timeout_error"
+          case _: io.circe.DecodingFailure              => "invalid_response_error"
+          case _                                        => "service_error"
+        }
+
+        requestTracer.foreach { tracer =>
+          val completedAt = System.currentTimeMillis()
+          tracer ! RequestTracer.Command.RecordTrace(
+            RequestTracer.RequestTrace(
+              request_id = requestId,
+              backend_id = backendId,
+              model = model,
+              request_type = "embedding",
+              status = "error",
+              error_type = Some(errorType),
+              started_at = startedAt,
+              completed_at = completedAt,
+              duration_ms = completedAt - startedAt,
+              http_status = Some(statusCode),
+              request_body = requestBody
+            )
+          )
         }
 
         replyTo ! EmbeddingRequestDispatcher.EmbeddingCompletionResponse.Error(

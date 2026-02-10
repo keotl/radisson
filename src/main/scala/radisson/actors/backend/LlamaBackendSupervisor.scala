@@ -2,6 +2,7 @@ package radisson.actors.backend
 
 import scala.concurrent.duration._
 
+import io.circe.Codec
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import radisson.backend.{MemoryParser, PortAllocator}
@@ -43,6 +44,7 @@ object LlamaBackendSupervisor extends Logging {
         replyTo: ActorRef[HoldResponse]
     )
     case CleanExpiredHolds
+    case GetStatus(replyTo: ActorRef[StatusResponse])
   }
 
   enum BackendResponse {
@@ -72,6 +74,25 @@ object LlamaBackendSupervisor extends Logging {
       acquiredAt: Long,
       expiresAt: Long
   )
+
+  case class BackendStatus(
+      id: String,
+      backend_type: String,
+      state: String, // "running", "starting", "draining", "stopped"
+      port: Option[Int] = None,
+      memory_bytes: Option[Long] = None,
+      last_access_time: Option[Long] = None,
+      held: Boolean = false,
+      hold_expires_at: Option[Long] = None
+  ) derives Codec.AsObject
+
+  case class StatusResponse(
+      total_memory_bytes: Long,
+      used_memory_bytes: Long,
+      available_memory_bytes: Long,
+      backends: List[BackendStatus],
+      pending_starts: Int
+  ) derives Codec.AsObject
 
   case class RunningBackend(
       port: Int,
@@ -608,6 +629,70 @@ object LlamaBackendSupervisor extends Logging {
           } else {
             Behaviors.same
           }
+
+        case Command.GetStatus(replyTo) =>
+          val usedMemory = calculateUsedMemory(state)
+          val backends = state.config.backends.map { backendConfig =>
+            val id = backendConfig.id
+            val hold = state.heldBackends.get(id)
+
+            state.runningBackends.get(id) match {
+              case Some(rb) =>
+                BackendStatus(
+                  id = id,
+                  backend_type = backendConfig.`type`,
+                  state = "running",
+                  port = Some(rb.port),
+                  memory_bytes = Some(rb.memoryUsed),
+                  last_access_time = Some(rb.lastAccessTime),
+                  held = hold.isDefined,
+                  hold_expires_at = hold.map(_.expiresAt)
+                )
+              case None =>
+                state.startingBackends.get(id) match {
+                  case Some(sb) =>
+                    BackendStatus(
+                      id = id,
+                      backend_type = backendConfig.`type`,
+                      state = "starting",
+                      port = if (sb.port != 0) Some(sb.port) else None,
+                      memory_bytes = Some(sb.memoryReserved),
+                      held = hold.isDefined,
+                      hold_expires_at = hold.map(_.expiresAt)
+                    )
+                  case None =>
+                    state.drainingBackends.get(id) match {
+                      case Some(db) =>
+                        BackendStatus(
+                          id = id,
+                          backend_type = backendConfig.`type`,
+                          state = "draining",
+                          port = Some(db.port),
+                          memory_bytes = Some(db.memoryUsed),
+                          held = hold.isDefined,
+                          hold_expires_at = hold.map(_.expiresAt)
+                        )
+                      case None =>
+                        BackendStatus(
+                          id = id,
+                          backend_type = backendConfig.`type`,
+                          state = "stopped",
+                          held = hold.isDefined,
+                          hold_expires_at = hold.map(_.expiresAt)
+                        )
+                    }
+                }
+            }
+          }
+
+          replyTo ! StatusResponse(
+            total_memory_bytes = state.totalMemory,
+            used_memory_bytes = usedMemory,
+            available_memory_bytes = state.totalMemory - usedMemory,
+            backends = backends,
+            pending_starts = state.pendingStarts.size
+          )
+          Behaviors.same
 
         case _ =>
           log.warn("Unexpected message in active state")

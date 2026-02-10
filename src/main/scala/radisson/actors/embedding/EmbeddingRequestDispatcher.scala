@@ -13,6 +13,7 @@ import radisson.actors.http.api.models.{
   ErrorDetail,
   ErrorResponse
 }
+import radisson.actors.tracing.RequestTracer
 import radisson.config.AppConfig
 import radisson.util.Logging
 
@@ -42,7 +43,8 @@ object EmbeddingRequestDispatcher extends Logging {
   enum Command {
     case Initialize(
         config: AppConfig,
-        backendSupervisor: ActorRef[LlamaBackendSupervisor.Command]
+        backendSupervisor: ActorRef[LlamaBackendSupervisor.Command],
+        requestTracer: Option[ActorRef[RequestTracer.Command]] = None
     )
 
     case HandleEmbedding(
@@ -86,13 +88,14 @@ object EmbeddingRequestDispatcher extends Logging {
       activeRequests: Map[String, RequestInfo],
       backendInFlightRequests: Map[String, Set[String]],
       pendingQueue: immutable.Queue[QueuedRequest],
-      drainingBackends: Set[String]
+      drainingBackends: Set[String],
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   )
 
   def behavior: Behavior[Command] = Behaviors.setup { context =>
 
     def uninitialized(): Behavior[Command] = Behaviors.receiveMessage {
-      case Command.Initialize(config, backendSupervisor) =>
+      case Command.Initialize(config, backendSupervisor, requestTracer) =>
         log.info("EmbeddingRequestDispatcher initialized")
         active(
           DispatcherState(
@@ -101,7 +104,8 @@ object EmbeddingRequestDispatcher extends Logging {
             activeRequests = Map.empty,
             backendInFlightRequests = Map.empty,
             pendingQueue = immutable.Queue.empty,
-            drainingBackends = Set.empty
+            drainingBackends = Set.empty,
+            requestTracer = requestTracer
           )
         )
 
@@ -171,7 +175,8 @@ object EmbeddingRequestDispatcher extends Logging {
                     request,
                     endpointInfo,
                     replyTo,
-                    context.self
+                    context.self,
+                    state.requestTracer
                   ),
                   s"embedding-request-$requestId"
                 )
@@ -286,7 +291,7 @@ object EmbeddingRequestDispatcher extends Logging {
             Behaviors.same
           }
 
-        case Command.Initialize(_, _) =>
+        case Command.Initialize(_, _, _) =>
           log.warn("Already initialized, ignoring")
           Behaviors.same
       }

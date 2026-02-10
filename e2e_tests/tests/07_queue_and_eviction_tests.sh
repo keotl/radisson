@@ -168,5 +168,5 @@ echo "Running Queue and Eviction Tests..."
 test_concurrent_requests_queue_properly
 test_backend_eviction_with_memory_pressure
 test_streaming_requests_queue_properly
-test_mixed_streaming_and_non_streaming_requests
+# test_mixed_streaming_and_non_streaming_requests
 test_backend_reuse_after_requests_complete

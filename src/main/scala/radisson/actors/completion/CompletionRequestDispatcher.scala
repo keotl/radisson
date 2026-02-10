@@ -12,6 +12,7 @@ import radisson.actors.http.api.models.{
   ErrorDetail,
   ErrorResponse
 }
+import radisson.actors.tracing.RequestTracer
 import radisson.config.AppConfig
 import radisson.util.Logging
 
@@ -66,7 +67,8 @@ object CompletionRequestDispatcher extends Logging {
   enum Command {
     case Initialize(
         config: AppConfig,
-        backendSupervisor: ActorRef[LlamaBackendSupervisor.Command]
+        backendSupervisor: ActorRef[LlamaBackendSupervisor.Command],
+        requestTracer: Option[ActorRef[RequestTracer.Command]] = None
     )
 
     case HandleCompletion(
@@ -129,13 +131,14 @@ object CompletionRequestDispatcher extends Logging {
       activeRequests: Map[String, RequestInfo],
       backendInFlightRequests: Map[String, Set[String]],
       pendingQueue: immutable.Queue[QueuedRequest],
-      drainingBackends: Set[String]
+      drainingBackends: Set[String],
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   )
 
   def behavior: Behavior[Command] = Behaviors.setup { context =>
 
     def uninitialized(): Behavior[Command] = Behaviors.receiveMessage {
-      case Command.Initialize(config, backendSupervisor) =>
+      case Command.Initialize(config, backendSupervisor, requestTracer) =>
         log.info("CompletionRequestDispatcher initialized")
         active(
           DispatcherState(
@@ -144,7 +147,8 @@ object CompletionRequestDispatcher extends Logging {
             activeRequests = Map.empty,
             backendInFlightRequests = Map.empty,
             pendingQueue = immutable.Queue.empty,
-            drainingBackends = Set.empty
+            drainingBackends = Set.empty,
+            requestTracer = requestTracer
           )
         )
 
@@ -297,7 +301,8 @@ object CompletionRequestDispatcher extends Logging {
                   request = request,
                   endpointInfo = endpointInfo,
                   replyTo = replyTo,
-                  dispatcher = context.self
+                  dispatcher = context.self,
+                  requestTracer = state.requestTracer
                 ),
                 s"completion-request-$requestId"
               )
@@ -421,7 +426,8 @@ object CompletionRequestDispatcher extends Logging {
                     chunkListener,
                     context.self,
                     requestId,
-                    backendId
+                    backendId,
+                    state.requestTracer
                   ),
                   s"streaming-completion-request-$requestId"
                 )

@@ -12,6 +12,9 @@ import radisson.actors.http.api.models.{
   ChatCompletionChunk,
   ChatCompletionRequest
 }
+import io.circe.Json
+import io.circe.syntax._
+import radisson.actors.tracing.RequestTracer
 import sttp.client4.WebSocketStreamBackend
 import sttp.client4.pekkohttp.PekkoHttpBackend
 
@@ -38,7 +41,8 @@ object StreamingCompletionRequestActor {
       chunkListener: ActorRef[ChunkMessage],
       dispatcherRef: ActorRef[CompletionRequestDispatcher.Command],
       requestId: String,
-      backendId: String
+      backendId: String,
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   ): Behavior[Command] =
     Behaviors.setup { context =>
       given system: org.apache.pekko.actor.typed.ActorSystem[?] =
@@ -48,9 +52,16 @@ object StreamingCompletionRequestActor {
         sttp.capabilities.pekko.PekkoStreams
       ] = PekkoHttpBackend.usingActorSystem(context.system.classicSystem)
 
+      var model: String = ""
+      var startedAt: Long = 0L
+      var requestBody: Option[Json] = None
+
       Behaviors.receiveMessage {
         case Command.Execute(request, endpointInfo) =>
           context.log.info(s"Starting streaming request $requestId")
+          model = request.model
+          startedAt = System.currentTimeMillis()
+          requestBody = requestTracer.map(_ => request.asJson)
 
           val streamingRequest =
             RequestBuilder.buildStreamingRequest(request, endpointInfo)(using
@@ -107,6 +118,25 @@ object StreamingCompletionRequestActor {
 
         case Command.StreamCompleted() =>
           context.log.info(s"Stream completed for request $requestId")
+
+          requestTracer.foreach { tracer =>
+            val completedAt = System.currentTimeMillis()
+            tracer ! RequestTracer.Command.RecordTrace(
+              RequestTracer.RequestTrace(
+                request_id = requestId,
+                backend_id = backendId,
+                model = model,
+                request_type = "streaming",
+                status = "success",
+                started_at = startedAt,
+                completed_at = completedAt,
+                duration_ms = completedAt - startedAt,
+                http_status = Some(200),
+                request_body = requestBody
+              )
+            )
+          }
+
           chunkListener ! ChunkMessage.Completed
           dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
             requestId,
@@ -117,6 +147,25 @@ object StreamingCompletionRequestActor {
 
         case Command.StreamFailed(error) =>
           context.log.error(s"Stream failed for request $requestId", error)
+
+          requestTracer.foreach { tracer =>
+            val completedAt = System.currentTimeMillis()
+            tracer ! RequestTracer.Command.RecordTrace(
+              RequestTracer.RequestTrace(
+                request_id = requestId,
+                backend_id = backendId,
+                model = model,
+                request_type = "streaming",
+                status = "error",
+                error_type = Some("stream_error"),
+                started_at = startedAt,
+                completed_at = completedAt,
+                duration_ms = completedAt - startedAt,
+                request_body = requestBody
+              )
+            )
+          }
+
           chunkListener ! ChunkMessage.Failed(error.getMessage)
           dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
             requestId,

@@ -15,6 +15,7 @@ import radisson.actors.http.api.routes.{
   HealthRoutes,
   OllamaRoutes
 }
+import radisson.actors.tracing.RequestTracer
 import radisson.config.AppConfig
 import radisson.util.JsonSupport.given
 import radisson.util.Logging
@@ -24,9 +25,9 @@ object RouteBuilder extends Logging {
       config: AppConfig,
       dispatcher: ActorRef[CompletionRequestDispatcher.Command],
       embeddingDispatcher: ActorRef[EmbeddingRequestDispatcher.Command],
-      backendSupervisor: ActorRef[LlamaBackendSupervisor.Command]
+      backendSupervisor: ActorRef[LlamaBackendSupervisor.Command],
+      requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   )(using system: org.apache.pekko.actor.typed.ActorSystem[?]): Route = {
-    // Exception handler for uncaught errors
     val exceptionHandler = ExceptionHandler { case ex: Exception =>
       log.error("Unhandled exception in route", ex)
       complete(
@@ -40,11 +41,10 @@ object RouteBuilder extends Logging {
       )
     }
 
-    // Combine all routes with exception handling
     handleExceptions(exceptionHandler) {
       concat(
         HealthRoutes.routes,
-        AdminRoutes.routes(backendSupervisor),
+        AdminRoutes.routes(backendSupervisor, requestTracer, Some(config)),
         OllamaRoutes.routes(config),
         ChatCompletionsRoutes.routes(config, dispatcher),
         EmbeddingsRoutes.routes(config, embeddingDispatcher)

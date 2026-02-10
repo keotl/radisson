@@ -11,7 +11,8 @@ case class AppConfig(
 case class ServerConfig(
     host: String,
     port: Int,
-    request_timeout: Int // seconds
+    request_timeout: Int, // seconds
+    request_tracing: Option[Boolean] = None
 ) derives Codec.AsObject
 
 case class BackendConfig(
