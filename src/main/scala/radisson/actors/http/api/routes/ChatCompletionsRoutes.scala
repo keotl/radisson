@@ -19,6 +19,7 @@ import radisson.actors.completion.{
 }
 import radisson.actors.http.api.models._
 import radisson.config.AppConfig
+import radisson.util.JsonSupport
 import radisson.util.JsonSupport.given
 
 object ChatCompletionsRoutes {
@@ -28,6 +29,8 @@ object ChatCompletionsRoutes {
   )(using system: ActorSystem[?]): Route = {
 
     given timeout: Timeout = Timeout(config.server.request_timeout.seconds)
+    given requestUnmarshaller: org.apache.pekko.http.scaladsl.unmarshalling.FromEntityUnmarshaller[ChatCompletionRequest] =
+      JsonSupport.checkingUnmarshaller[ChatCompletionRequest]("ChatCompletionRequest")
 
     pathPrefix("v1") {
       path("models") {

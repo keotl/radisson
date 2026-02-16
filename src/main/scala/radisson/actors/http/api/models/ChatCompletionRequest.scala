@@ -15,5 +15,16 @@ case class ChatCompletionRequest(
     frequency_penalty: Option[Double] = None,
     user: Option[String] = None,
     tools: Option[List[Tool]] = None,
-    tool_choice: Option[ToolChoice] = None
+    tool_choice: Option[ToolChoice] = None,
+    parallel_tool_calls: Option[Boolean] = None,
+    logprobs: Option[Boolean] = None,
+    top_logprobs: Option[Int] = None,
+    service_tier: Option[String] = None, // "auto", "default", "flex", "priority"
+    max_completion_tokens: Option[Int] = None,
+    stream_options: Option[StreamOptions] = None,
+    reasoning_effort: Option[String] = None // "low", "medium", "high"
+) derives Codec.AsObject
+
+case class StreamOptions(
+    include_usage: Option[Boolean] = None
 ) derives Codec.AsObject

@@ -8,5 +8,7 @@ case class ChatCompletionResponse(
     created: Long, // Unix timestamp
     model: String,
     choices: List[Choice],
-    usage: Usage
+    usage: Usage,
+    system_fingerprint: Option[String] = None,
+    service_tier: Option[String] = None
 ) derives Codec.AsObject

@@ -46,7 +46,7 @@ class ToolCallResponseDeserializationTest extends munit.FunSuite {
         )
         assertEquals(
           response.choices.head.message.tool_calls.get.head.function.name,
-          "get_weather"
+          Some("get_weather")
         )
       case Left(error) =>
         fail(s"Failed to deserialize: $error")

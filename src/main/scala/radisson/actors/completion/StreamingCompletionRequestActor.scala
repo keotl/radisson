@@ -55,6 +55,7 @@ object StreamingCompletionRequestActor {
       var model: String = ""
       var startedAt: Long = 0L
       var requestBody: Option[Json] = None
+      var rawRequestBody: Option[String] = None
 
       Behaviors.receiveMessage {
         case Command.Execute(request, endpointInfo) =>
@@ -62,6 +63,7 @@ object StreamingCompletionRequestActor {
           model = request.model
           startedAt = System.currentTimeMillis()
           requestBody = requestTracer.map(_ => request.asJson)
+          rawRequestBody = requestTracer.map(_ => request.asJson.noSpaces)
 
           val streamingRequest =
             RequestBuilder.buildStreamingRequest(request, endpointInfo)(using
@@ -132,7 +134,8 @@ object StreamingCompletionRequestActor {
                 completed_at = completedAt,
                 duration_ms = completedAt - startedAt,
                 http_status = Some(200),
-                request_body = requestBody
+                request_body = requestBody,
+                raw_request_body = rawRequestBody
               )
             )
           }
@@ -161,7 +164,8 @@ object StreamingCompletionRequestActor {
                 started_at = startedAt,
                 completed_at = completedAt,
                 duration_ms = completedAt - startedAt,
-                request_body = requestBody
+                request_body = requestBody,
+                raw_request_body = rawRequestBody
               )
             )
           }

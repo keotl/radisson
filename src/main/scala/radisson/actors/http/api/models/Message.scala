@@ -8,5 +8,6 @@ case class Message(
     name: Option[String] = None,
     tool_calls: Option[List[ToolCall]] =
       None, // For assistant messages invoking tools
-    tool_call_id: Option[String] = None // For tool response messages
+    tool_call_id: Option[String] = None, // For tool response messages
+    reasoning_content: Option[String] = None
 ) derives Codec.AsObject

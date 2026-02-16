@@ -121,8 +121,8 @@ class ToolSerializationTest extends munit.FunSuite {
     val message = result.toOption.get
     assert(message.tool_calls.isDefined)
     assert(message.tool_calls.get.length == 1)
-    assert(message.tool_calls.get.head.id == "call_123")
-    assert(message.tool_calls.get.head.function.name == "get_weather")
+    assertEquals(message.tool_calls.get.head.id, Some("call_123"))
+    assertEquals(message.tool_calls.get.head.function.name, Some("get_weather"))
   }
 
   test("deserialize Message with tool_call_id") {
@@ -158,6 +158,6 @@ class ToolSerializationTest extends munit.FunSuite {
     assert(result.isRight)
     val delta = result.toOption.get
     assert(delta.tool_calls.isDefined)
-    assert(delta.tool_calls.get.head.id == "call_123")
+    assertEquals(delta.tool_calls.get.head.id, Some("call_123"))
   }
 }

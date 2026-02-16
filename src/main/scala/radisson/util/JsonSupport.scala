@@ -4,7 +4,7 @@ import scala.concurrent.Future
 
 import io.circe.parser.decode
 import io.circe.syntax._
-import io.circe.{Decoder, Encoder, Printer}
+import io.circe.{Decoder, Encoder, Printer, parser}
 import org.apache.pekko.http.scaladsl.marshalling.{
   Marshaller,
   ToEntityMarshaller
@@ -31,6 +31,19 @@ object JsonSupport {
       decode[T](string).fold(
         error => Future.failed(error),
         value => Future.successful(value)
+      )
+    }
+
+  def checkingUnmarshaller[T: Decoder: Encoder](typeName: String): FromEntityUnmarshaller[T] =
+    Unmarshaller.stringUnmarshaller.flatMap { _ => _ => string =>
+      decode[T](string).fold(
+        error => Future.failed(error),
+        value => {
+          parser.parse(string).foreach { originalJson =>
+            FieldDropDetector.warnOnDroppedFields(typeName, originalJson, value)
+          }
+          Future.successful(value)
+        }
       )
     }
 }

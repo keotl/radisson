@@ -15,7 +15,7 @@ import radisson.actors.http.api.models.{
   ErrorResponse
 }
 import radisson.actors.tracing.RequestTracer
-import radisson.util.Logging
+import radisson.util.{FieldDropDetector, Logging}
 import sttp.client4._
 import sttp.client4.httpclient.HttpClientFutureBackend
 
@@ -24,8 +24,11 @@ object CompletionRequestActor extends Logging {
   enum Command {
     case Execute
 
-    case HttpResponseReceived(result: Try[ChatCompletionResponse])
-    case HttpRequestFailed(error: Throwable)
+    case HttpResponseReceived(
+        result: Try[ChatCompletionResponse],
+        rawResponse: Option[String] = None
+    )
+    case HttpRequestFailed(error: Throwable, rawResponse: Option[String] = None)
   }
 
   def behavior(
@@ -50,32 +53,44 @@ object CompletionRequestActor extends Logging {
         endpointInfo
       )
 
+      val rawRequestBody = requestTracer.map(_ => request.asJson.noSpaces)
+
       val responseFuture =
-        httpRequest.send(sttpBackend).flatMap { response =>
+        httpRequest.send(sttpBackend).map { response =>
           val bodyString = response.body match {
             case Right(body) => body
             case Left(body)  => body
           }
 
-          if response.code.isSuccess then {
-            parser.decode[ChatCompletionResponse](bodyString) match {
-              case Right(completionResponse) =>
-                Future.successful(completionResponse)
-              case Left(error) => Future.failed(error)
+          val parsed = if response.code.isSuccess then {
+            val result = parser.decode[ChatCompletionResponse](bodyString).toTry
+            result.foreach { decoded =>
+              parser.parse(bodyString).foreach { originalJson =>
+                FieldDropDetector.warnOnDroppedFields("ChatCompletionResponse", originalJson, decoded)
+              }
             }
+            result
           } else {
-            Future.failed(
+            Failure(
               new RuntimeException(
                 s"Backend returned error: ${response.code} - $bodyString"
               )
             )
           }
+
+          (parsed, bodyString)
         }
 
       context.pipeToSelf(responseFuture) {
-        case Success(response) =>
-          Command.HttpResponseReceived(Success(response))
-        case Failure(error) => Command.HttpRequestFailed(error)
+        case Success((tryResponse, rawResponse)) =>
+          tryResponse match {
+            case Success(response) =>
+              Command.HttpResponseReceived(Success(response), Some(rawResponse))
+            case Failure(error) =>
+              Command.HttpRequestFailed(error, Some(rawResponse))
+          }
+        case Failure(error) =>
+          Command.HttpRequestFailed(error, None)
       }
 
       val requestBody = requestTracer.map(_ => request.asJson)
@@ -85,6 +100,7 @@ object CompletionRequestActor extends Logging {
         request.model,
         startedAt,
         requestBody,
+        rawRequestBody,
         replyTo,
         dispatcher,
         requestTracer
@@ -98,12 +114,13 @@ object CompletionRequestActor extends Logging {
       model: String,
       startedAt: Long,
       requestBody: Option[Json],
+      rawRequestBody: Option[String],
       replyTo: ActorRef[CompletionRequestDispatcher.CompletionResponse],
       dispatcher: ActorRef[CompletionRequestDispatcher.Command],
       requestTracer: Option[ActorRef[RequestTracer.Command]]
   ): Behavior[Command] = Behaviors.receive { (context, message) =>
     message match {
-      case Command.HttpResponseReceived(Success(response)) =>
+      case Command.HttpResponseReceived(Success(response), rawResponse) =>
         requestTracer.foreach { tracer =>
           val completedAt = System.currentTimeMillis()
           tracer ! RequestTracer.Command.RecordTrace(
@@ -120,7 +137,10 @@ object CompletionRequestActor extends Logging {
               completion_tokens = Some(response.usage.completion_tokens),
               total_tokens = Some(response.usage.total_tokens),
               http_status = Some(200),
-              request_body = requestBody
+              request_body = requestBody,
+              response_body = Some(response.asJson),
+              raw_request_body = rawRequestBody,
+              raw_response_body = rawResponse
             )
           )
         }
@@ -135,7 +155,7 @@ object CompletionRequestActor extends Logging {
         )
         Behaviors.stopped
 
-      case Command.HttpRequestFailed(error) =>
+      case Command.HttpRequestFailed(error, rawResponse) =>
         val (errorResponse, statusCode) = error match {
           case _: java.util.concurrent.TimeoutException =>
             (
@@ -189,7 +209,9 @@ object CompletionRequestActor extends Logging {
               completed_at = completedAt,
               duration_ms = completedAt - startedAt,
               http_status = Some(statusCode),
-              request_body = requestBody
+              request_body = requestBody,
+              raw_request_body = rawRequestBody,
+              raw_response_body = rawResponse
             )
           )
         }

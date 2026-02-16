@@ -22,7 +22,10 @@ object RequestTracer {
       completion_tokens: Option[Int] = None,
       total_tokens: Option[Int] = None,
       http_status: Option[Int] = None,
-      request_body: Option[Json] = None
+      request_body: Option[Json] = None,
+      response_body: Option[Json] = None,
+      raw_request_body: Option[String] = None,
+      raw_response_body: Option[String] = None
   ) derives Codec.AsObject
 
   case class TracesResponse(
