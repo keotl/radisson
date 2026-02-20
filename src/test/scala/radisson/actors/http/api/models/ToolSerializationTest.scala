@@ -1,5 +1,6 @@
 package radisson.actors.http.api.models
 
+import io.circe.{Json, parser}
 import io.circe.parser.decode
 import io.circe.syntax._
 
@@ -82,7 +83,7 @@ class ToolSerializationTest extends munit.FunSuite {
 
     val request = ChatCompletionRequest(
       model = "gpt-4",
-      messages = List(Message("user", Some("test"))),
+      messages = List(Message("user", Some(Json.fromString("test")))),
       tools = Some(List(tool)),
       tool_choice = Some(ToolChoice.StringChoice("auto"))
     )
@@ -159,5 +160,41 @@ class ToolSerializationTest extends munit.FunSuite {
     val delta = result.toOption.get
     assert(delta.tool_calls.isDefined)
     assertEquals(delta.tool_calls.get.head.id, Some("call_123"))
+  }
+
+  test("deserialize Message with array content (multimodal)") {
+    val json = """{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "hello"},
+        {"type": "text", "text": "world"}
+      ]
+    }"""
+
+    val result = decode[Message](json)
+    assert(result.isRight, s"Failed to decode: $result")
+    val message = result.toOption.get
+    assert(message.content.isDefined)
+    assert(message.content.get.isArray, "content should be a JSON array")
+    assertEquals(message.content.get.asArray.get.length, 2)
+  }
+
+  test("array content round-trips through serialization") {
+    val json = """{
+      "model": "gpt-4",
+      "messages": [{
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "hello"}
+        ]
+      }]
+    }"""
+
+    val result = decode[ChatCompletionRequest](json)
+    assert(result.isRight, s"Failed to decode: $result")
+    val roundtripped = result.toOption.get.asJson.as[ChatCompletionRequest]
+    assert(roundtripped.isRight)
+    val msg = roundtripped.toOption.get.messages.head
+    assert(msg.content.get.isArray)
   }
 }

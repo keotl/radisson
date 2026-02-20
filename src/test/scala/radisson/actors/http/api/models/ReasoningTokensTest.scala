@@ -1,5 +1,6 @@
 package radisson.actors.http.api.models
 
+import io.circe.{Json, parser}
 import io.circe.parser.decode
 import io.circe.syntax._
 
@@ -32,7 +33,7 @@ class ReasoningTokensTest extends munit.FunSuite {
     val result = decode[Message](json)
     assert(result.isRight)
     val message = result.toOption.get
-    assertEquals(message.content, Some("The answer is 42."))
+    assertEquals(message.content, Some(Json.fromString("The answer is 42.")))
     assertEquals(message.reasoning_content, Some("I need to calculate..."))
   }
 
@@ -102,7 +103,7 @@ class ReasoningTokensTest extends munit.FunSuite {
   test("round-trip serialization preserves reasoning fields") {
     val message = Message(
       role = "assistant",
-      content = Some("The answer is 42."),
+      content = Some(Json.fromString("The answer is 42.")),
       reasoning_content = Some("Let me think...")
     )
 
@@ -111,7 +112,7 @@ class ReasoningTokensTest extends munit.FunSuite {
     assert(decoded.isRight)
     val roundtrip = decoded.toOption.get
     assertEquals(roundtrip.reasoning_content, Some("Let me think..."))
-    assertEquals(roundtrip.content, Some("The answer is 42."))
+    assertEquals(roundtrip.content, Some(Json.fromString("The answer is 42.")))
   }
 
   test("backward compatibility: Message without reasoning fields") {
@@ -123,7 +124,7 @@ class ReasoningTokensTest extends munit.FunSuite {
     val result = decode[Message](json)
     assert(result.isRight)
     val message = result.toOption.get
-    assertEquals(message.content, Some("Hello!"))
+    assertEquals(message.content, Some(Json.fromString("Hello!")))
     assertEquals(message.reasoning_content, None)
   }
 
@@ -189,7 +190,7 @@ class ReasoningTokensTest extends munit.FunSuite {
   test("round-trip serialization of request with reasoning fields") {
     val request = ChatCompletionRequest(
       model = "o3",
-      messages = List(Message("user", Some("test"))),
+      messages = List(Message("user", Some(Json.fromString("test")))),
       max_completion_tokens = Some(4096),
       reasoning_effort = Some("medium"),
       stream_options = Some(StreamOptions(include_usage = Some(true)))

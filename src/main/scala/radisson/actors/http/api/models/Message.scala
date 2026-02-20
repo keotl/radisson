@@ -1,10 +1,10 @@
 package radisson.actors.http.api.models
 
-import io.circe.Codec
+import io.circe.{Codec, Json}
 
 case class Message(
     role: String, // "system", "user", "assistant", "tool"
-    content: Option[String] = None,
+    content: Option[Json] = None,
     name: Option[String] = None,
     tool_calls: Option[List[ToolCall]] =
       None, // For assistant messages invoking tools

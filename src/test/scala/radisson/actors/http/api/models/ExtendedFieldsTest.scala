@@ -1,5 +1,6 @@
 package radisson.actors.http.api.models
 
+import io.circe.{Json, parser}
 import io.circe.parser._
 import io.circe.syntax._
 import munit.FunSuite
@@ -9,7 +10,7 @@ class ExtendedFieldsTest extends FunSuite {
   test("ChatCompletionRequest serializes with new fields") {
     val request = ChatCompletionRequest(
       model = "gpt-4",
-      messages = List(Message("user", Some("Hello"))),
+      messages = List(Message("user", Some(Json.fromString("Hello")))),
       parallel_tool_calls = Some(false),
       logprobs = Some(true),
       top_logprobs = Some(3),

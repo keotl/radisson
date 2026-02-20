@@ -75,8 +75,25 @@ test_remote_backend_response_structure() {
     fi
 }
 
+test_array_content_completion() {
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+    local payload='{"model":"local-mock","messages":[{"role":"user","content":[{"type":"text","text":"Hello"},{"type":"text","text":"world"}]}],"stream":false}'
+    response=$(http_post "http://$HOST:$PORT/v1/chat/completions" "$payload")
+    http_code=$(echo "$response" | tail -n1)
+
+    if [ "$http_code" -eq 200 ]; then
+        echo "  ✓ Array content: Request with content as array of parts returns 200"
+        PASSED_TESTS=$((PASSED_TESTS + 1))
+    else
+        echo "  ✗ Array content: Request with content as array of parts returns 200 (got $http_code)"
+        FAILED_TESTS=$((FAILED_TESTS + 1))
+    fi
+}
+
 echo "Running Non-Streaming Completion Tests..."
 test_local_backend_completion
 test_local_backend_response_structure
 test_remote_backend_completion
 test_remote_backend_response_structure
+test_array_content_completion

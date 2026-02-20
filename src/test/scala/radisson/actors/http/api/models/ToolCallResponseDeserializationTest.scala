@@ -1,6 +1,6 @@
 package radisson.actors.http.api.models
 
-import io.circe.parser
+import io.circe.{Json, parser}
 
 class ToolCallResponseDeserializationTest extends munit.FunSuite {
 
@@ -88,7 +88,10 @@ class ToolCallResponseDeserializationTest extends munit.FunSuite {
     result match {
       case Right(response) =>
         assertEquals(response.id, "chatcmpl-456")
-        assertEquals(response.choices.head.message.content, Some(""))
+        assertEquals(
+          response.choices.head.message.content,
+          Some(Json.fromString(""))
+        )
       case Left(error) =>
         fail(s"Failed to deserialize: $error")
     }
