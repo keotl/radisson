@@ -52,7 +52,11 @@ class RequestTracerResponseBodyTest extends FunSuite {
     assertEquals(response.traces.size, 1)
     assert(response.traces.head.response_body.isDefined)
     assertEquals(
-      response.traces.head.response_body.get.asObject.get("id").get.asString.get,
+      response.traces.head.response_body.get.asObject
+        .get("id")
+        .get
+        .asString
+        .get,
       "chatcmpl-123"
     )
   }
@@ -86,8 +90,10 @@ class RequestTracerResponseBodyTest extends FunSuite {
     val tracer = testKit.spawn(RequestTracer.behavior)
     val probe = testKit.createTestProbe[RequestTracer.TracesResponse]()
 
-    val rawRequest = """{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}"""
-    val rawResponse = """{"id":"chatcmpl-123","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi there!"}}]}"""
+    val rawRequest =
+      """{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}"""
+    val rawResponse =
+      """{"id":"chatcmpl-123","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Hi there!"}}]}"""
 
     val trace = RequestTracer.RequestTrace(
       request_id = "req-1",
@@ -116,8 +122,10 @@ class RequestTracerResponseBodyTest extends FunSuite {
     val tracer = testKit.spawn(RequestTracer.behavior)
     val probe = testKit.createTestProbe[RequestTracer.TracesResponse]()
 
-    val rawRequest = """{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}"""
-    val rawResponse = """{"id":"chatcmpl-123","choices":[{"message":{"role":"assistant","tool_calls":[{"unexpected_field":"value"}]}}]}"""
+    val rawRequest =
+      """{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}]}"""
+    val rawResponse =
+      """{"id":"chatcmpl-123","choices":[{"message":{"role":"assistant","tool_calls":[{"unexpected_field":"value"}]}}]}"""
 
     val trace = RequestTracer.RequestTrace(
       request_id = "req-1",
@@ -141,7 +149,10 @@ class RequestTracerResponseBodyTest extends FunSuite {
 
     assertEquals(response.traces.size, 1)
     assertEquals(response.traces.head.status, "error")
-    assertEquals(response.traces.head.error_type, Some("invalid_response_error"))
+    assertEquals(
+      response.traces.head.error_type,
+      Some("invalid_response_error")
+    )
     assertEquals(response.traces.head.raw_request_body, Some(rawRequest))
     assertEquals(response.traces.head.raw_response_body, Some(rawResponse))
   }

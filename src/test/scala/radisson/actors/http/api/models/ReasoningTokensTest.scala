@@ -15,7 +15,10 @@ class ReasoningTokensTest extends munit.FunSuite {
     val result = decode[Message](json)
     assert(result.isRight, s"Failed to decode: $result")
     val message = result.toOption.get
-    assertEquals(message.reasoning_content, Some("Let me think about this step by step..."))
+    assertEquals(
+      message.reasoning_content,
+      Some("Let me think about this step by step...")
+    )
     assertEquals(message.content, None)
   }
 
@@ -138,7 +141,9 @@ class ReasoningTokensTest extends munit.FunSuite {
     assertEquals(usage.prompt_tokens_details, None)
   }
 
-  test("backward compatibility: ChatCompletionRequest without reasoning fields") {
+  test(
+    "backward compatibility: ChatCompletionRequest without reasoning fields"
+  ) {
     val json = """{
       "model": "gpt-4",
       "messages": [{"role": "user", "content": "test"}]
@@ -175,7 +180,10 @@ class ReasoningTokensTest extends munit.FunSuite {
     assert(chunk.usage.isDefined)
     assertEquals(chunk.usage.get.total_tokens, 30)
     assert(chunk.usage.get.completion_tokens_details.isDefined)
-    assertEquals(chunk.usage.get.completion_tokens_details.get.reasoning_tokens, Some(15))
+    assertEquals(
+      chunk.usage.get.completion_tokens_details.get.reasoning_tokens,
+      Some(15)
+    )
   }
 
   test("round-trip serialization of request with reasoning fields") {

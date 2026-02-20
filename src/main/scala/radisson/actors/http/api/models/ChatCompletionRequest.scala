@@ -19,7 +19,8 @@ case class ChatCompletionRequest(
     parallel_tool_calls: Option[Boolean] = None,
     logprobs: Option[Boolean] = None,
     top_logprobs: Option[Int] = None,
-    service_tier: Option[String] = None, // "auto", "default", "flex", "priority"
+    service_tier: Option[String] =
+      None, // "auto", "default", "flex", "priority"
     max_completion_tokens: Option[Int] = None,
     stream_options: Option[StreamOptions] = None,
     reasoning_effort: Option[String] = None // "low", "medium", "high"

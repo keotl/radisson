@@ -66,7 +66,11 @@ object CompletionRequestActor extends Logging {
             val result = parser.decode[ChatCompletionResponse](bodyString).toTry
             result.foreach { decoded =>
               parser.parse(bodyString).foreach { originalJson =>
-                FieldDropDetector.warnOnDroppedFields("ChatCompletionResponse", originalJson, decoded)
+                FieldDropDetector.warnOnDroppedFields(
+                  "ChatCompletionResponse",
+                  originalJson,
+                  decoded
+                )
               }
             }
             result

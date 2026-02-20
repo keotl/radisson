@@ -1,7 +1,7 @@
 package radisson.util
 
-import io.circe.{Encoder, Json}
 import io.circe.syntax._
+import io.circe.{Encoder, Json}
 
 object FieldDropDetector extends Logging {
 
@@ -9,7 +9,7 @@ object FieldDropDetector extends Logging {
       original: Json,
       reEncoded: Json,
       path: String = ""
-  ): Set[String] = {
+  ): Set[String] =
     (original.asObject, reEncoded.asObject) match {
       case (Some(origObj), Some(reObj)) =>
         val reKeys = reObj.keys.toSet
@@ -20,7 +20,11 @@ object FieldDropDetector extends Logging {
           reObj(key) match {
             case Some(reValue) =>
               val childPath = if (path.isEmpty) key else s"$path.$key"
-              findDroppedFields(origObj(key).getOrElse(Json.Null), reValue, childPath)
+              findDroppedFields(
+                origObj(key).getOrElse(Json.Null),
+                reValue,
+                childPath
+              )
             case None => Set.empty[String]
           }
         }.toSet
@@ -29,14 +33,17 @@ object FieldDropDetector extends Logging {
       case _ =>
         (original.asArray, reEncoded.asArray) match {
           case (Some(origArr), Some(reArr)) =>
-            origArr.zip(reArr).zipWithIndex.flatMap { case ((origElem, reElem), idx) =>
-              val elemPath = if (path.isEmpty) s"[$idx]" else s"$path[$idx]"
-              findDroppedFields(origElem, reElem, elemPath)
-            }.toSet
+            origArr
+              .zip(reArr)
+              .zipWithIndex
+              .flatMap { case ((origElem, reElem), idx) =>
+                val elemPath = if (path.isEmpty) s"[$idx]" else s"$path[$idx]"
+                findDroppedFields(origElem, reElem, elemPath)
+              }
+              .toSet
           case _ => Set.empty
         }
     }
-  }
 
   def warnOnDroppedFields[T: Encoder](
       typeName: String,

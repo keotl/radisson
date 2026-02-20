@@ -19,7 +19,8 @@ object LlamaBackendRunner extends Logging {
         command: String,
         port: Int,
         replyTo: ActorRef[LlamaBackendSupervisor.Command],
-        upstreamUrl: Option[String] = None
+        upstreamUrl: Option[String] = None,
+        startupTimeout: Option[Int] = None
     )
     case Stop
     case GetStatus(replyTo: ActorRef[StatusResponse])
@@ -45,7 +46,8 @@ object LlamaBackendRunner extends Logging {
         command: String,
         port: Int,
         replyTo: ActorRef[LlamaBackendSupervisor.Command],
-        upstreamUrl: Option[String] = None
+        upstreamUrl: Option[String] = None,
+        startupTimeout: Option[Int] = None
     )
     case Running(
         backendId: String,
@@ -64,7 +66,14 @@ object LlamaBackendRunner extends Logging {
       HttpClientFutureBackend()
 
     def idle(): Behavior[Command] = Behaviors.receiveMessage {
-      case Command.Start(backendId, command, port, replyTo, upstreamUrl) =>
+      case Command.Start(
+            backendId,
+            command,
+            port,
+            replyTo,
+            upstreamUrl,
+            startupTimeout
+          ) =>
         log.info("Starting backend {} on port {}", backendId, port)
 
         val substitutedCommand = ProcessManager.substitutePort(command, port)
@@ -83,7 +92,7 @@ object LlamaBackendRunner extends Logging {
           case Failure(cause)   => Command.ProcessFailed(cause)
         }
 
-        starting(backendId, command, port, replyTo, upstreamUrl)
+        starting(backendId, command, port, replyTo, upstreamUrl, startupTimeout)
 
       case Command.GetStatus(replyTo) =>
         replyTo ! StatusResponse.Idle
@@ -99,7 +108,8 @@ object LlamaBackendRunner extends Logging {
         command: String,
         port: Int,
         replyTo: ActorRef[LlamaBackendSupervisor.Command],
-        upstreamUrl: Option[String]
+        upstreamUrl: Option[String],
+        startupTimeout: Option[Int]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.ProcessStarted(process) =>
         log.info("Backend {} process started, checking health", backendId)
@@ -129,11 +139,24 @@ object LlamaBackendRunner extends Logging {
             ("127.0.0.1", port, "/health")
         }
 
+        val delay = 5.seconds
+        val defaultTimeout = 100 // 20 attempts * 5s = 100s
+        val effectiveTimeout = startupTimeout.getOrElse(defaultTimeout)
+        val maxAttempts = (effectiveTimeout / delay.toSeconds).toInt.max(1)
+
+        log.info(
+          "Backend {} health check: maxAttempts={}, delay={}, timeout={}s",
+          backendId,
+          maxAttempts,
+          delay,
+          effectiveTimeout
+        )
+
         val healthFuture = HealthChecker.retryHealthCheck(
           host = healthHost,
           port = healthPort,
-          maxAttempts = 20,
-          delay = 5.seconds,
+          maxAttempts = maxAttempts,
+          delay = delay,
           path = healthPath
         )
 

@@ -84,7 +84,8 @@ class ExtendedFieldsTest extends FunSuite {
     val toolCall = ToolCall(
       id = Some("call_abc123"),
       `type` = Some("function"),
-      function = FunctionCall(Some("get_weather"), Some("""{"location":"SF"}""")),
+      function =
+        FunctionCall(Some("get_weather"), Some("""{"location":"SF"}""")),
       index = Some(0)
     )
 
@@ -162,7 +163,11 @@ class ExtendedFieldsTest extends FunSuite {
             bytes = Some(List(72, 101, 108, 108, 111)),
             top_logprobs = Some(
               List(
-                TopLogProb("Hello", -0.31725305, Some(List(72, 101, 108, 108, 111))),
+                TopLogProb(
+                  "Hello",
+                  -0.31725305,
+                  Some(List(72, 101, 108, 108, 111))
+                ),
                 TopLogProb("Hi", -1.3190403, Some(List(72, 105)))
               )
             )

@@ -16,7 +16,11 @@ object ChunkParser {
             case Right(chunk) =>
               if (!checked) {
                 parsed.foreach { originalJson =>
-                  FieldDropDetector.warnOnDroppedFields("ChatCompletionChunk", originalJson, chunk)
+                  FieldDropDetector.warnOnDroppedFields(
+                    "ChatCompletionChunk",
+                    originalJson,
+                    chunk
+                  )
                 }
                 (true, Some(chunk))
               } else {

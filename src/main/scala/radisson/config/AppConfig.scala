@@ -24,7 +24,8 @@ case class BackendConfig(
     command: Option[String] = None,
     upstream_url: Option[String] = None,
     resources: Option[BackendResources] = None,
-    upstream_timeout: Option[Int] = None
+    upstream_timeout: Option[Int] = None,
+    startup_timeout: Option[Int] = None // seconds, for slow-starting backends
 ) derives Codec.AsObject
 
 case class BackendResources(

@@ -12,18 +12,23 @@ case class FunctionDefinition(
     name: String,
     description: Option[String] = None,
     parameters: Option[Json] = None, // JSON Schema
-    strict: Option[Boolean] = None // Enables structured outputs with strict validation
+    strict: Option[Boolean] =
+      None // Enables structured outputs with strict validation
 ) derives Codec.AsObject
 
 case class ToolCall(
-    id: Option[String] = None, // Required in non-streaming, optional in streaming deltas
-    `type`: Option[String] = None, // Required in non-streaming, optional in streaming deltas
+    id: Option[String] =
+      None, // Required in non-streaming, optional in streaming deltas
+    `type`: Option[String] =
+      None, // Required in non-streaming, optional in streaming deltas
     function: FunctionCall,
-    index: Option[Int] = None // For streaming: identifies which tool call in parallel calls
+    index: Option[Int] =
+      None // For streaming: identifies which tool call in parallel calls
 ) derives Codec.AsObject
 
 case class FunctionCall(
-    name: Option[String] = None, // Present in first delta, absent in subsequent deltas
+    name: Option[String] =
+      None, // Present in first delta, absent in subsequent deltas
     arguments: Option[String] = None // Accumulated across streaming deltas
 ) derives Codec.AsObject
 

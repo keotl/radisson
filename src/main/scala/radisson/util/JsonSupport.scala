@@ -34,7 +34,9 @@ object JsonSupport {
       )
     }
 
-  def checkingUnmarshaller[T: Decoder: Encoder](typeName: String): FromEntityUnmarshaller[T] =
+  def checkingUnmarshaller[T: Decoder: Encoder](
+      typeName: String
+  ): FromEntityUnmarshaller[T] =
     Unmarshaller.stringUnmarshaller.flatMap { _ => _ => string =>
       decode[T](string).fold(
         error => Future.failed(error),
