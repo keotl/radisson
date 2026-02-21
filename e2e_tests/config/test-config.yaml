@@ -49,5 +49,16 @@ backends:
       memory: "100Mi"
     upstream_timeout: 10
 
+  - id: "first-available-mock"
+    type: "first-available"
+    backends:
+      - "local-mock"
+      - "local-mock2"
+
+  - id: "first-available-local-only"
+    type: "first-available"
+    backends:
+      - "local-mock"
+
 resources:
   total_memory: "1200Mi"

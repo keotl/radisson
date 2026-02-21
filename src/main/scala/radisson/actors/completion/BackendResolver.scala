@@ -9,7 +9,7 @@ object BackendResolver {
       modelName: String,
       config: AppConfig
   ): Either[ErrorResponse, BackendConfig] =
-    resolveBackend(modelName, config, Set("local", "remote"))
+    resolveBackend(modelName, config, Set("local", "remote", "first-available"))
 
   def resolveBackend(
       modelName: String,
@@ -32,4 +32,54 @@ object BackendResolver {
         )
     }
   }
+
+  def resolveFirstAvailableBackend(
+      firstAvailableBackend: BackendConfig,
+      config: AppConfig
+  ): Either[ErrorResponse, BackendConfig] =
+    firstAvailableBackend.backends match {
+      case None | Some(Nil) =>
+        Left(
+          ErrorResponse(
+            ErrorDetail(
+              s"Backend '${firstAvailableBackend.id}' has no backends to try",
+              "invalid_request_error"
+            )
+          )
+        )
+      case Some(backendIds) =>
+        resolveFirstAvailableBackendRecursive(
+          backendIds,
+          config,
+          firstAvailableBackend
+        )
+    }
+
+  private def resolveFirstAvailableBackendRecursive(
+      backendIds: List[String],
+      config: AppConfig,
+      firstAvailableBackend: BackendConfig
+  ): Either[ErrorResponse, BackendConfig] =
+    backendIds match {
+      case Nil =>
+        Left(
+          ErrorResponse(
+            ErrorDetail(
+              s"None of the backends for '${firstAvailableBackend.id}' are available",
+              "service_unavailable"
+            )
+          )
+        )
+      case backendId :: remaining =>
+        config.backends.find(_.id == backendId) match {
+          case None =>
+            resolveFirstAvailableBackendRecursive(
+              remaining,
+              config,
+              firstAvailableBackend
+            )
+          case Some(backend) =>
+            Right(backend)
+        }
+    }
 }

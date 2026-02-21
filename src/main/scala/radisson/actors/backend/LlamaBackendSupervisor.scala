@@ -45,6 +45,11 @@ object LlamaBackendSupervisor extends Logging {
     )
     case CleanExpiredHolds
     case GetStatus(replyTo: ActorRef[StatusResponse])
+    case FirstAvailableBackendResolved(
+        firstAvailableId: String,
+        backendId: String,
+        backendResponse: BackendResponse
+    )
   }
 
   enum BackendResponse {
@@ -122,6 +127,11 @@ object LlamaBackendSupervisor extends Logging {
       replyTo: ActorRef[BackendResponse]
   )
 
+  case class FirstAvailableRequest(
+      replyTo: ActorRef[BackendResponse],
+      remainingBackends: List[String]
+  )
+
   case class SupervisorState(
       config: AppConfig,
       totalMemory: Long,
@@ -136,7 +146,8 @@ object LlamaBackendSupervisor extends Logging {
         ActorRef[radisson.actors.embedding.EmbeddingRequestDispatcher.Command]
       ],
       pendingStarts: List[PendingStart],
-      heldBackends: Map[String, BackendHold]
+      heldBackends: Map[String, BackendHold],
+      firstAvailableRequests: Map[String, FirstAvailableRequest]
   )
 
   def behavior: Behavior[Command] = Behaviors.withTimers { timers =>
@@ -171,7 +182,8 @@ object LlamaBackendSupervisor extends Logging {
             dispatcherRef = None,
             embeddingDispatcherRef = None,
             pendingStarts = List.empty,
-            heldBackends = Map.empty
+            heldBackends = Map.empty,
+            firstAvailableRequests = Map.empty
           )
 
           timers.startTimerAtFixedRate(Command.CleanExpiredHolds, 30.seconds)
@@ -219,11 +231,19 @@ object LlamaBackendSupervisor extends Logging {
 
             case None =>
               state.config.backends.find(_.id == backendId) match {
+                case Some(backendConfig)
+                    if backendConfig.`type` == "first-available" =>
+                  handleFirstAvailableBackend(state, backendConfig, replyTo)
+
                 case Some(backendConfig) if backendConfig.`type` == "local" =>
                   handleLocalBackendRequest(state, backendConfig, replyTo)
 
                 case Some(backendConfig)
                     if backendConfig.`type` == "local-embeddings" =>
+                  handleLocalBackendRequest(state, backendConfig, replyTo)
+
+                case Some(backendConfig)
+                    if backendConfig.`type` == "local-stub" =>
                   handleLocalBackendRequest(state, backendConfig, replyTo)
 
                 case Some(backendConfig) if backendConfig.`type` == "remote" =>
@@ -329,6 +349,68 @@ object LlamaBackendSupervisor extends Logging {
               log.warn(
                 "Received BackendStarted for unknown backend {}",
                 backendId
+              )
+              Behaviors.same
+          }
+
+        case Command.FirstAvailableBackendResolved(
+              firstAvailableId,
+              backendId,
+              backendResponse
+            ) =>
+          state.firstAvailableRequests.get(firstAvailableId) match {
+            case Some(request) =>
+              backendResponse match {
+                case BackendResponse.Available(endpoint, port) =>
+                  log.info(
+                    "First-available backend {} using backend {} at {}",
+                    firstAvailableId,
+                    backendId,
+                    endpoint
+                  )
+                  request.replyTo ! BackendResponse.Available(endpoint, port)
+                  active(
+                    state.copy(firstAvailableRequests =
+                      state.firstAvailableRequests - firstAvailableId
+                    )
+                  )
+
+                case BackendResponse.Starting =>
+                  log.debug(
+                    "First-available backend {} backend {} is still starting",
+                    firstAvailableId,
+                    backendId
+                  )
+                  Behaviors.same
+
+                case BackendResponse.Failed(reason) =>
+                  log.warn(
+                    "First-available backend {} backend {} failed to start: {}",
+                    firstAvailableId,
+                    backendId,
+                    reason
+                  )
+                  val cleanedState = state.copy(
+                    firstAvailableRequests =
+                      state.firstAvailableRequests - firstAvailableId
+                  )
+                  if (request.remainingBackends.nonEmpty) {
+                    attemptFirstAvailableBackend(
+                      cleanedState,
+                      firstAvailableId,
+                      request.remainingBackends,
+                      request.replyTo
+                    )
+                  } else {
+                    request.replyTo ! BackendResponse.Failed(reason)
+                    active(cleanedState)
+                  }
+              }
+
+            case None =>
+              log.warn(
+                "Received FirstAvailableBackendResolved for unknown first-available backend {}",
+                firstAvailableId
               )
               Behaviors.same
           }
@@ -675,13 +757,23 @@ object LlamaBackendSupervisor extends Logging {
                           hold_expires_at = hold.map(_.expiresAt)
                         )
                       case None =>
-                        BackendStatus(
-                          id = id,
-                          backend_type = backendConfig.`type`,
-                          state = "stopped",
-                          held = hold.isDefined,
-                          hold_expires_at = hold.map(_.expiresAt)
-                        )
+                        if (state.firstAvailableRequests.contains(id)) {
+                          BackendStatus(
+                            id = id,
+                            backend_type = backendConfig.`type`,
+                            state = "starting",
+                            held = hold.isDefined,
+                            hold_expires_at = hold.map(_.expiresAt)
+                          )
+                        } else {
+                          BackendStatus(
+                            id = id,
+                            backend_type = backendConfig.`type`,
+                            state = "stopped",
+                            held = hold.isDefined,
+                            hold_expires_at = hold.map(_.expiresAt)
+                          )
+                        }
                     }
                 }
             }
@@ -700,6 +792,379 @@ object LlamaBackendSupervisor extends Logging {
           log.warn("Unexpected message in active state")
           Behaviors.same
       }
+
+    def handleFirstAvailableBackend(
+        state: SupervisorState,
+        backendConfig: BackendConfig,
+        replyTo: ActorRef[BackendResponse]
+    ): Behavior[Command] = {
+      val backendId = backendConfig.id
+
+      if (state.firstAvailableRequests.contains(backendId)) {
+        log.info("First-available backend {} is already starting", backendId)
+        replyTo ! BackendResponse.Starting
+        return Behaviors.same
+      }
+
+      backendConfig.backends match {
+        case None | Some(Nil) =>
+          log.error(
+            "First-available backend {} has no backends to try",
+            backendId
+          )
+          replyTo ! BackendResponse.Failed("No backends to try")
+          Behaviors.same
+
+        case Some(backendIds) =>
+          log.info(
+            "First-available backend {} trying backends: {}",
+            backendId,
+            backendIds.mkString(", ")
+          )
+          attemptFirstAvailableBackend(state, backendId, backendIds, replyTo)
+      }
+    }
+
+    def attemptFirstAvailableBackend(
+        state: SupervisorState,
+        firstAvailableId: String,
+        backendIds: List[String],
+        replyTo: ActorRef[BackendResponse]
+    ): Behavior[Command] = {
+      backendIds match {
+        case Nil =>
+          log.error(
+            "First-available backend {} could not find any available backend",
+            firstAvailableId
+          )
+          replyTo ! BackendResponse.Failed("No available backend")
+          Behaviors.same
+
+        case backendId :: remaining =>
+          log.debug(
+            "First-available backend {} attempting backend: {}",
+            firstAvailableId,
+            backendId
+          )
+
+          state.runningBackends.get(backendId) match {
+            case Some(backend) =>
+              state.config.backends.find(_.id == backendId) match {
+                case Some(backendConfig) =>
+                  val endpoint = backendConfig.upstream_url.getOrElse(
+                    s"http://127.0.0.1:${backend.port}"
+                  )
+
+                  log.info(
+                    "First-available backend {} using running backend {} (endpoint: {})",
+                    firstAvailableId,
+                    backendId,
+                    endpoint
+                  )
+
+                  val updatedBackend =
+                    backend.copy(lastAccessTime = System.currentTimeMillis())
+                  replyTo ! BackendResponse.Available(endpoint, backend.port)
+                  active(
+                    state.copy(
+                      runningBackends =
+                        state.runningBackends.updated(backendId, updatedBackend)
+                    )
+                  )
+
+                case None =>
+                  log.warn("Backend config not found for {}", backendId)
+                  attemptFirstAvailableBackend(
+                    state,
+                    firstAvailableId,
+                    remaining,
+                    replyTo
+                  )
+              }
+
+            case None =>
+              state.config.backends.find(_.id == backendId) match {
+                case Some(backendConfig)
+                    if backendConfig.`type` == "local" ||
+                      backendConfig.`type` == "local-embeddings" ||
+                      backendConfig.`type` == "local-stub" =>
+                  log.info(
+                    "First-available backend {} starting backend {}",
+                    firstAvailableId,
+                    backendId
+                  )
+                  val updatedState = state.copy(
+                    firstAvailableRequests = state.firstAvailableRequests + (
+                      firstAvailableId -> FirstAvailableRequest(
+                        replyTo,
+                        remaining
+                      )
+                    )
+                  )
+                  startBackendWithFallback(
+                    context,
+                    updatedState,
+                    firstAvailableId,
+                    backendConfig,
+                    backendId,
+                    replyTo
+                  )
+
+                case Some(backendConfig) if backendConfig.`type` == "remote" =>
+                  backendConfig.endpoint match {
+                    case Some(endpoint) =>
+                      log.info(
+                        "First-available backend {} using remote backend {} at {}",
+                        firstAvailableId,
+                        backendId,
+                        endpoint
+                      )
+                      replyTo ! BackendResponse.Available(endpoint, 0)
+                      Behaviors.same
+
+                    case None =>
+                      log.error("Remote backend {} missing endpoint", backendId)
+                      attemptFirstAvailableBackend(
+                        state,
+                        firstAvailableId,
+                        remaining,
+                        replyTo
+                      )
+                  }
+
+                case None =>
+                  log.error("Backend {} not found in configuration", backendId)
+                  attemptFirstAvailableBackend(
+                    state,
+                    firstAvailableId,
+                    remaining,
+                    replyTo
+                  )
+              }
+          }
+      }
+    }
+
+    def startBackendWithFallback(
+        context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+        state: SupervisorState,
+        firstAvailableId: String,
+        backendConfig: BackendConfig,
+        backendId: String,
+        replyTo: ActorRef[BackendResponse]
+    ): Behavior[Command] = {
+      backendConfig.upstream_url match {
+        case Some(upstream_url) =>
+          backendConfig.resources match {
+            case Some(resources) =>
+              MemoryParser.parseMemoryString(resources.memory) match {
+                case Right(requiredMemory) =>
+                  val usedMemory = calculateUsedMemory(state)
+                  val availableMemory = state.totalMemory - usedMemory
+
+                  if (availableMemory >= requiredMemory) {
+                    log.info(
+                      "Starting backend {} for first-available {} with upstream URL: {}",
+                      backendId,
+                      firstAvailableId,
+                      upstream_url
+                    )
+                    startBackendWithUpstreamUrl(
+                      context,
+                      state,
+                      backendConfig,
+                      backendConfig.command.get,
+                      upstream_url,
+                      requiredMemory,
+                      context.messageAdapter(response =>
+                        LlamaBackendSupervisor.Command
+                          .FirstAvailableBackendResolved(
+                            firstAvailableId,
+                            backendId,
+                            response
+                          )
+                      )
+                    )
+                  } else {
+                    evictAndStartWithUpstreamUrl(
+                      context,
+                      state,
+                      backendConfig,
+                      backendConfig.command.get,
+                      upstream_url,
+                      requiredMemory,
+                      context.messageAdapter(response =>
+                        LlamaBackendSupervisor.Command
+                          .FirstAvailableBackendResolved(
+                            firstAvailableId,
+                            backendId,
+                            response
+                          )
+                      )
+                    )
+                  }
+
+                case Left(error) =>
+                  log.error(
+                    "Failed to parse memory for backend {}: {}",
+                    backendId,
+                    error
+                  )
+                  state.firstAvailableRequests.get(firstAvailableId) match {
+                    case Some(request) =>
+                      val cleanedState = state.copy(
+                        firstAvailableRequests =
+                          state.firstAvailableRequests - firstAvailableId
+                      )
+                      if (request.remainingBackends.nonEmpty) {
+                        attemptFirstAvailableBackend(
+                          cleanedState,
+                          firstAvailableId,
+                          request.remainingBackends,
+                          request.replyTo
+                        )
+                      } else {
+                        request.replyTo ! BackendResponse.Failed(
+                          s"Invalid memory configuration: $error"
+                        )
+                        active(cleanedState)
+                      }
+                    case None =>
+                      replyTo ! BackendResponse.Failed(
+                        s"Invalid memory configuration: $error"
+                      )
+                      Behaviors.same
+                  }
+              }
+
+            case None =>
+              startBackendWithUpstreamUrl(
+                context,
+                state,
+                backendConfig,
+                backendConfig.command.get,
+                upstream_url,
+                0L,
+                context.messageAdapter(response =>
+                  LlamaBackendSupervisor.Command.FirstAvailableBackendResolved(
+                    firstAvailableId,
+                    backendId,
+                    response
+                  )
+                )
+              )
+          }
+
+        case None =>
+          backendConfig.resources match {
+            case Some(resources) =>
+              MemoryParser.parseMemoryString(resources.memory) match {
+                case Right(requiredMemory) =>
+                  val usedMemory = calculateUsedMemory(state)
+                  val availableMemory = state.totalMemory - usedMemory
+
+                  log.info(
+                    "Backend {} requires {} MB, available {} MB",
+                    backendId,
+                    requiredMemory / (1024 * 1024),
+                    availableMemory / (1024 * 1024)
+                  )
+
+                  if (availableMemory >= requiredMemory) {
+                    startBackend(
+                      context,
+                      state,
+                      backendConfig,
+                      requiredMemory,
+                      context.messageAdapter(response =>
+                        LlamaBackendSupervisor.Command
+                          .FirstAvailableBackendResolved(
+                            firstAvailableId,
+                            backendId,
+                            response
+                          )
+                      )
+                    )
+                  } else {
+                    evictAndStart(
+                      context,
+                      state,
+                      backendConfig,
+                      requiredMemory,
+                      context.messageAdapter(response =>
+                        LlamaBackendSupervisor.Command
+                          .FirstAvailableBackendResolved(
+                            firstAvailableId,
+                            backendId,
+                            response
+                          )
+                      )
+                    )
+                  }
+
+                case Left(error) =>
+                  log.error(
+                    "Failed to parse memory for backend {}: {}",
+                    backendId,
+                    error
+                  )
+                  state.firstAvailableRequests.get(firstAvailableId) match {
+                    case Some(request) =>
+                      val cleanedState = state.copy(
+                        firstAvailableRequests =
+                          state.firstAvailableRequests - firstAvailableId
+                      )
+                      if (request.remainingBackends.nonEmpty) {
+                        attemptFirstAvailableBackend(
+                          cleanedState,
+                          firstAvailableId,
+                          request.remainingBackends,
+                          request.replyTo
+                        )
+                      } else {
+                        request.replyTo ! BackendResponse.Failed(
+                          s"Invalid memory configuration: $error"
+                        )
+                        active(cleanedState)
+                      }
+                    case None =>
+                      replyTo ! BackendResponse.Failed(
+                        s"Invalid memory configuration: $error"
+                      )
+                      Behaviors.same
+                  }
+              }
+
+            case None =>
+              log.error("Backend {} missing resources configuration", backendId)
+              state.firstAvailableRequests.get(firstAvailableId) match {
+                case Some(request) =>
+                  val cleanedState = state.copy(
+                    firstAvailableRequests =
+                      state.firstAvailableRequests - firstAvailableId
+                  )
+                  if (request.remainingBackends.nonEmpty) {
+                    attemptFirstAvailableBackend(
+                      cleanedState,
+                      firstAvailableId,
+                      request.remainingBackends,
+                      request.replyTo
+                    )
+                  } else {
+                    request.replyTo ! BackendResponse.Failed(
+                      "Backend missing resources configuration"
+                    )
+                    active(cleanedState)
+                  }
+                case None =>
+                  replyTo ! BackendResponse.Failed(
+                    "Backend missing resources configuration"
+                  )
+                  Behaviors.same
+              }
+          }
+      }
+    }
 
     def handleLocalBackendRequest(
         state: SupervisorState,

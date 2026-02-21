@@ -8,6 +8,7 @@ object ConfigValidator {
       case "local-embeddings" => validateLocalBackend(backend)
       case "local-stub"       => validateLocalBackend(backend)
       case "remote"           => validateRemoteBackend(backend)
+      case "first-available"  => validateFirstAvailableBackend(backend)
       case other =>
         Left(s"Backend '${backend.id}': Unknown type '$other'")
     }
@@ -47,6 +48,17 @@ object ConfigValidator {
             )
           case None => Right(())
         }
+    }
+
+  private def validateFirstAvailableBackend(
+      backend: BackendConfig
+  ): Either[String, Unit] =
+    backend.backends match {
+      case None | Some(Nil) =>
+        Left(
+          s"Backend '${backend.id}': first-available type must have 'backends' list"
+        )
+      case Some(_) => Right(())
     }
 
   def validateConfig(config: AppConfig): Either[String, Unit] =
