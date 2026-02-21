@@ -19,8 +19,16 @@ import radisson.util.Logging
 
 object EmbeddingRequestDispatcher extends Logging {
 
-  private val MaxBackendStartRetries = 20
   private val BackendStartRetryDelay = 3.seconds
+  private val DefaultStartupTimeout = 60 // seconds
+
+  private def maxRetriesFor(backendId: String, config: AppConfig): Int = {
+    val timeout = config.backends
+      .find(_.id == backendId)
+      .flatMap(_.startup_timeout)
+      .getOrElse(DefaultStartupTimeout)
+    (timeout / BackendStartRetryDelay.toSeconds).toInt.max(1)
+  }
 
   enum RequestPriority(val value: Int) {
     case RunningBackend extends RequestPriority(1)
@@ -200,7 +208,7 @@ object EmbeddingRequestDispatcher extends Logging {
               )
 
             case LlamaBackendSupervisor.BackendResponse.Starting
-                if retryCount < MaxBackendStartRetries =>
+                if retryCount < maxRetriesFor(backendId, state.config) =>
               context.scheduleOnce(
                 BackendStartRetryDelay,
                 context.self,

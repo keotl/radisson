@@ -18,8 +18,16 @@ import radisson.util.Logging
 
 object CompletionRequestDispatcher extends Logging {
 
-  private val MaxBackendStartRetries = 20
   private val BackendStartRetryDelay = 3.seconds
+  private val DefaultStartupTimeout = 60 // seconds
+
+  private def maxRetriesFor(backendId: String, config: AppConfig): Int = {
+    val timeout = config.backends
+      .find(_.id == backendId)
+      .flatMap(_.startup_timeout)
+      .getOrElse(DefaultStartupTimeout)
+    (timeout / BackendStartRetryDelay.toSeconds).toInt.max(1)
+  }
 
   enum RequestPriority(val value: Int) {
     case RunningBackend extends RequestPriority(1)
@@ -233,11 +241,12 @@ object CompletionRequestDispatcher extends Logging {
             ) =>
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
-              if retryCount >= MaxBackendStartRetries then
+              val maxRetries = maxRetriesFor(backendId, state.config)
+              if retryCount >= maxRetries then
                 log.warn(
                   "Backend '{}' did not start after {} attempts",
                   backendId,
-                  MaxBackendStartRetries
+                  maxRetries
                 )
                 replyTo ! CompletionResponse.Error(
                   ErrorResponse(
@@ -255,7 +264,7 @@ object CompletionRequestDispatcher extends Logging {
                   backendId,
                   BackendStartRetryDelay,
                   retryCount + 1,
-                  MaxBackendStartRetries
+                  maxRetries
                 )
 
                 val responseAdapter =
@@ -350,11 +359,12 @@ object CompletionRequestDispatcher extends Logging {
             ) =>
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
-              if retryCount >= MaxBackendStartRetries then
+              val maxRetries = maxRetriesFor(backendId, state.config)
+              if retryCount >= maxRetries then
                 log.warn(
                   "Backend '{}' did not start after {} attempts (streaming)",
                   backendId,
-                  MaxBackendStartRetries
+                  maxRetries
                 )
                 queue.offer(
                   StreamingCompletionRequestActor.ChunkMessage.Failed(
@@ -370,7 +380,7 @@ object CompletionRequestDispatcher extends Logging {
                   backendId,
                   BackendStartRetryDelay,
                   retryCount + 1,
-                  MaxBackendStartRetries
+                  maxRetries
                 )
 
                 val responseAdapter =

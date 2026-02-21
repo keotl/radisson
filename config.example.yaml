@@ -32,7 +32,7 @@ backends:
     resources:
       memory: "200Mi"
     upstream_timeout: 90
-    startup_timeout: 180  # Optional, wait up to 3 minutes for slow-starting backends
+    startup_timeout: 180  # Optional, for slow-starting backends
     # Chat completions will be: http://172.16.0.2:8080/v1/chat/completions
     # Health check will be: http://172.16.0.2:8080/health
 
