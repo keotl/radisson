@@ -291,10 +291,11 @@ object CompletionRequestDispatcher extends Logging {
                 Behaviors.same
 
             case LlamaBackendSupervisor.BackendResponse
-                  .Available(endpoint, port) =>
+                  .Available(endpoint, port, resolvedBackendId) =>
               val requestId = java.util.UUID.randomUUID().toString
+              val configId = resolvedBackendId.getOrElse(backendId)
               val backendConfig =
-                state.config.backends.find(_.id == backendId).get
+                state.config.backends.find(_.id == configId).get
 
               val endpointInfo = RequestBuilder.buildEndpointInfo(
                 backendConfig,
@@ -408,7 +409,7 @@ object CompletionRequestDispatcher extends Logging {
                 Behaviors.same
 
             case LlamaBackendSupervisor.BackendResponse
-                  .Available(endpoint, port) =>
+                  .Available(endpoint, port, resolvedBackendId) =>
               if state.activeRequests.contains(requestId) then
                 log.debug(
                   "Request {} already has an active streaming actor, ignoring duplicate backend resolution",
@@ -416,8 +417,9 @@ object CompletionRequestDispatcher extends Logging {
                 )
                 Behaviors.same
               else
+                val configId = resolvedBackendId.getOrElse(backendId)
                 val backendConfig =
-                  state.config.backends.find(_.id == backendId).get
+                  state.config.backends.find(_.id == configId).get
 
                 val endpointInfo = RequestBuilder.buildEndpointInfo(
                   backendConfig,

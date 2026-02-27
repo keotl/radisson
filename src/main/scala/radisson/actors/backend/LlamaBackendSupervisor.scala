@@ -53,7 +53,11 @@ object LlamaBackendSupervisor extends Logging {
   }
 
   enum BackendResponse {
-    case Available(endpoint: String, port: Int)
+    case Available(
+        endpoint: String,
+        port: Int,
+        resolvedBackendId: Option[String] = None
+    )
     case Starting
     case Failed(reason: String)
   }
@@ -361,14 +365,18 @@ object LlamaBackendSupervisor extends Logging {
           state.firstAvailableRequests.get(firstAvailableId) match {
             case Some(request) =>
               backendResponse match {
-                case BackendResponse.Available(endpoint, port) =>
+                case BackendResponse.Available(endpoint, port, _) =>
                   log.info(
                     "First-available backend {} using backend {} at {}",
                     firstAvailableId,
                     backendId,
                     endpoint
                   )
-                  request.replyTo ! BackendResponse.Available(endpoint, port)
+                  request.replyTo ! BackendResponse.Available(
+                    endpoint,
+                    port,
+                    resolvedBackendId = Some(backendId)
+                  )
                   active(
                     state.copy(firstAvailableRequests =
                       state.firstAvailableRequests - firstAvailableId
@@ -793,6 +801,19 @@ object LlamaBackendSupervisor extends Logging {
           Behaviors.same
       }
 
+    def findRunningFirstAvailableBackend(
+        state: SupervisorState,
+        backendIds: List[String]
+    ): Option[(String, RunningBackend, BackendConfig)] = {
+      backendIds.collectFirst {
+        case id if state.runningBackends.contains(id) =>
+          (for {
+            backend <- state.runningBackends.get(id)
+            config <- state.config.backends.find(_.id == id)
+          } yield (id, backend, config))
+      }.flatten
+    }
+
     def handleFirstAvailableBackend(
         state: SupervisorState,
         backendConfig: BackendConfig,
@@ -816,12 +837,32 @@ object LlamaBackendSupervisor extends Logging {
           Behaviors.same
 
         case Some(backendIds) =>
-          log.info(
-            "First-available backend {} trying backends: {}",
-            backendId,
-            backendIds.mkString(", ")
-          )
-          attemptFirstAvailableBackend(state, backendId, backendIds, replyTo)
+          findRunningFirstAvailableBackend(state, backendIds) match {
+            case Some((runningId, backend, runningConfig)) =>
+              val endpoint = runningConfig.upstream_url.getOrElse(
+                s"http://127.0.0.1:${backend.port}"
+              )
+              log.info(
+                "First-available backend {} using already-running backend {} (endpoint: {})",
+                backendId, runningId, endpoint
+              )
+              val updatedBackend = backend.copy(lastAccessTime = System.currentTimeMillis())
+              replyTo ! BackendResponse.Available(
+                endpoint,
+                backend.port,
+                resolvedBackendId = Some(runningId)
+              )
+              active(state.copy(
+                runningBackends = state.runningBackends.updated(runningId, updatedBackend)
+              ))
+
+            case None =>
+              log.info(
+                "First-available backend {} no running backends, trying in order: {}",
+                backendId, backendIds.mkString(", ")
+              )
+              attemptFirstAvailableBackend(state, backendId, backendIds, replyTo)
+          }
       }
     }
 
@@ -864,7 +905,11 @@ object LlamaBackendSupervisor extends Logging {
 
                   val updatedBackend =
                     backend.copy(lastAccessTime = System.currentTimeMillis())
-                  replyTo ! BackendResponse.Available(endpoint, backend.port)
+                  replyTo ! BackendResponse.Available(
+                    endpoint,
+                    backend.port,
+                    resolvedBackendId = Some(backendId)
+                  )
                   active(
                     state.copy(
                       runningBackends =
@@ -919,7 +964,11 @@ object LlamaBackendSupervisor extends Logging {
                         backendId,
                         endpoint
                       )
-                      replyTo ! BackendResponse.Available(endpoint, 0)
+                      replyTo ! BackendResponse.Available(
+                        endpoint,
+                        0,
+                        resolvedBackendId = Some(backendId)
+                      )
                       Behaviors.same
 
                     case None =>
@@ -1637,7 +1686,7 @@ object LlamaBackendSupervisor extends Logging {
         acquiredAt: Long,
         expiresAt: Long
     ): Behavior[BackendResponse] = Behaviors.receiveMessage {
-      case BackendResponse.Available(endpoint, port) =>
+      case BackendResponse.Available(endpoint, port, _) =>
         replyTo ! HoldResponse.Acquired(
           backendId = backendId,
           backendType = backendConfig.`type`,

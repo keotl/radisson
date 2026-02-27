@@ -52,8 +52,8 @@ backends:
   - id: "first-available-mock"
     type: "first-available"
     backends:
+      - "remote-mock"
       - "local-mock"
-      - "local-mock2"
 
   - id: "first-available-local-only"
     type: "first-available"

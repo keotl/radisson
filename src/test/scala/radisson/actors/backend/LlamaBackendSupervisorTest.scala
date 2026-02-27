@@ -61,7 +61,7 @@ class LlamaBackendSupervisorTest extends FunSuite {
 
     val response = responseProbe.receiveMessage(3.seconds)
     response match {
-      case LlamaBackendSupervisor.BackendResponse.Available(ep, p) =>
+      case LlamaBackendSupervisor.BackendResponse.Available(ep, p, _) =>
         assertEquals(ep, "http://example.com:8000")
         assertEquals(p, 0)
       case other =>

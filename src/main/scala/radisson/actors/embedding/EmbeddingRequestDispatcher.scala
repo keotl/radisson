@@ -162,11 +162,13 @@ object EmbeddingRequestDispatcher extends Logging {
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Available(
                   endpoint,
-                  port
+                  port,
+                  resolvedBackendId
                 ) =>
               val requestId = java.util.UUID.randomUUID().toString
+              val configId = resolvedBackendId.getOrElse(backendId)
               val backendConfig =
-                state.config.backends.find(_.id == backendId).get
+                state.config.backends.find(_.id == configId).get
 
               val endpointInfo = RequestBuilder.buildEmbeddingEndpointInfo(
                 backendConfig,
