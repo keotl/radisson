@@ -5,9 +5,11 @@ import scala.concurrent.duration._
 import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.AskPattern._
 import org.apache.pekko.actor.typed.{ActorRef, ActorSystem}
-import org.apache.pekko.http.scaladsl.marshalling.sse.EventStreamMarshalling._
+import org.apache.pekko.http.scaladsl.model.{HttpEntity, HttpResponse, StatusCode, StatusCodes}
+import org.apache.pekko.http.scaladsl.model.MediaType
+import org.apache.pekko.http.scaladsl.model.ContentType
+import org.apache.pekko.http.scaladsl.model.HttpCharsets
 import org.apache.pekko.http.scaladsl.model.sse.ServerSentEvent
-import org.apache.pekko.http.scaladsl.model.{StatusCode, StatusCodes}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.Route
 import org.apache.pekko.stream.OverflowStrategy
@@ -85,7 +87,24 @@ object ChatCompletionsRoutes {
                         )
                     }
 
-                    complete(sseSource)
+                    val sseContentType = MediaType.customWithFixedCharset(
+                      "text",
+                      "event-stream",
+                      HttpCharsets.`UTF-8`
+                    )
+                    val byteSource = sseSource.map { event =>
+                      val sb = new StringBuilder
+                      event.eventType.foreach(t => sb.append(s"event:$t\n"))
+                      event.data.split("\n").foreach(line => sb.append(s"data:$line\n"))
+                      sb.append("\n")
+                      org.apache.pekko.util.ByteString(sb.toString)
+                    }
+                    complete(HttpResponse(
+                      entity = HttpEntity.Chunked.fromData(
+                        ContentType(sseContentType),
+                        byteSource
+                      )
+                    ))
                   } else {
                     val responseFuture = dispatcher
                       .ask[CompletionRequestDispatcher.CompletionResponse](
