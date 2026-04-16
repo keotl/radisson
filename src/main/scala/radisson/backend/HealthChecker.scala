@@ -1,8 +1,9 @@
 package radisson.backend
 
 import scala.concurrent.duration._
-import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.{ExecutionContext, Future, Promise}
 
+import org.apache.pekko.actor.Scheduler
 import sttp.client4._
 
 object HealthChecker {
@@ -34,16 +35,15 @@ object HealthChecker {
       path: String = "/health"
   )(implicit
       backend: Backend[Future],
-      ec: ExecutionContext
+      ec: ExecutionContext,
+      scheduler: Scheduler
   ): Future[Boolean] = {
     def attemptCheck(attemptsRemaining: Int): Future[Boolean] =
       checkHealth(host, port, path).flatMap { isHealthy =>
         if (isHealthy) {
           Future.successful(true)
         } else if (attemptsRemaining > 1) {
-          Future {
-            Thread.sleep(delay.toMillis)
-          }.flatMap { _ =>
+          afterDelay(delay).flatMap { _ =>
             attemptCheck(attemptsRemaining - 1)
           }
         } else {
@@ -52,5 +52,13 @@ object HealthChecker {
       }
 
     attemptCheck(maxAttempts)
+  }
+
+  private def afterDelay(
+      delay: FiniteDuration
+  )(implicit scheduler: Scheduler, ec: ExecutionContext): Future[Unit] = {
+    val promise = Promise[Unit]()
+    scheduler.scheduleOnce(delay, () => promise.success(()))
+    promise.future
   }
 }

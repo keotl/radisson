@@ -29,12 +29,6 @@ object CompletionRequestDispatcher extends Logging {
     (timeout / BackendStartRetryDelay.toSeconds).toInt.max(1)
   }
 
-  enum RequestPriority(val value: Int) {
-    case RunningBackend extends RequestPriority(1)
-    case StartingBackend extends RequestPriority(2)
-    case NewBackend extends RequestPriority(3)
-  }
-
   case class QueuedRequest(
       request: ChatCompletionRequest,
       backendId: String,
@@ -46,12 +40,8 @@ object CompletionRequestDispatcher extends Logging {
           StreamingCompletionRequestActor.ChunkMessage
         ]
       ],
-      isStreaming: Boolean,
-      priority: RequestPriority
+      isStreaming: Boolean
   )
-
-  given Ordering[QueuedRequest] =
-    Ordering.by(req => (req.priority.value, req.queuedAt))
 
   private object QueueAdapter {
     def behavior(
@@ -59,15 +49,26 @@ object CompletionRequestDispatcher extends Logging {
           StreamingCompletionRequestActor.ChunkMessage
         ]
     ): Behavior[StreamingCompletionRequestActor.ChunkMessage] =
-      Behaviors.receive { (context, message) =>
-        queue.offer(message)
-        message match {
-          case StreamingCompletionRequestActor.ChunkMessage.Completed |
-              StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
-            queue.complete()
-            Behaviors.stopped
-          case _ =>
-            Behaviors.same
+      Behaviors.setup { context =>
+        given ec: scala.concurrent.ExecutionContext =
+          context.executionContext
+        // Pekko's Source.queue with OverflowStrategy.backpressure requires that
+        // each offer's Future complete before the next offer is issued. Chain
+        // offers via flatMap so only one is in flight at any time; otherwise a
+        // backpressured consumer would cause the second offer to fail.
+        var pending: scala.concurrent.Future[Any] =
+          scala.concurrent.Future.successful(())
+
+        Behaviors.receiveMessage { message =>
+          pending = pending.flatMap(_ => queue.offer(message))
+          message match {
+            case StreamingCompletionRequestActor.ChunkMessage.Completed |
+                StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
+              pending.onComplete(_ => queue.complete())
+              Behaviors.stopped
+            case _ =>
+              Behaviors.same
+          }
         }
       }
   }
@@ -181,8 +182,7 @@ object CompletionRequestDispatcher extends Logging {
                 requestId = requestId,
                 queuedAt = System.currentTimeMillis(),
                 replyTo = Left(replyTo),
-                isStreaming = false,
-                priority = RequestPriority.NewBackend
+                isStreaming = false
               )
 
               log.debug(
@@ -216,8 +216,7 @@ object CompletionRequestDispatcher extends Logging {
                 requestId = requestId,
                 queuedAt = System.currentTimeMillis(),
                 replyTo = Right(queue),
-                isStreaming = true,
-                priority = RequestPriority.NewBackend
+                isStreaming = true
               )
 
               log.debug(
@@ -528,11 +527,10 @@ object CompletionRequestDispatcher extends Logging {
           else
             val (queuedRequest, remainingQueue) = state.pendingQueue.dequeue
             log.debug(
-              "Processing queued request {} for backend {} (queued at {}, priority {})",
+              "Processing queued request {} for backend {} (queued at {})",
               queuedRequest.requestId,
               queuedRequest.backendId,
-              queuedRequest.queuedAt,
-              queuedRequest.priority
+              queuedRequest.queuedAt
             )
 
             if queuedRequest.isStreaming then

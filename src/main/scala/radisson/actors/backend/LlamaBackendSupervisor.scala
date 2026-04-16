@@ -201,6 +201,15 @@ object LlamaBackendSupervisor extends Logging {
 
     def active(state: SupervisorState): Behavior[Command] =
       Behaviors.receiveMessage {
+        case Command.RequestBackend(backendId, replyTo)
+            if state.drainingBackends.contains(backendId) =>
+          log.info(
+            "Backend {} is draining, reporting as starting so caller retries after drain completes",
+            backendId
+          )
+          replyTo ! BackendResponse.Starting
+          Behaviors.same
+
         case Command.RequestBackend(backendId, replyTo) =>
           state.runningBackends.get(backendId) match {
             case Some(backend) =>
@@ -454,7 +463,7 @@ object LlamaBackendSupervisor extends Logging {
         case Command.BackendStopped(backendId) =>
           state.runningBackends.get(backendId) match {
             case Some(backend) =>
-              log.info("Backend {} stopped", backendId)
+              log.info("Backend {} stopped (was running)", backendId)
 
               active(
                 state.copy(
@@ -464,11 +473,25 @@ object LlamaBackendSupervisor extends Logging {
               )
 
             case None =>
-              log.warn(
-                "Received BackendStopped for unknown backend {}",
-                backendId
-              )
-              Behaviors.same
+              state.drainingBackends.get(backendId) match {
+                case Some(backend) =>
+                  log.info(
+                    "Backend {} stopped (drain complete), processing pending starts",
+                    backendId
+                  )
+                  val cleaned = state.copy(
+                    drainingBackends = state.drainingBackends - backendId,
+                    allocatedPorts = state.allocatedPorts - backend.port
+                  )
+                  processNextPendingStart(cleaned)
+
+                case None =>
+                  log.warn(
+                    "Received BackendStopped for unknown backend {}",
+                    backendId
+                  )
+                  Behaviors.same
+              }
           }
 
         case Command.StopBackend(backendId) =>
@@ -494,63 +517,12 @@ object LlamaBackendSupervisor extends Logging {
         case Command.BackendDrained(backendId) =>
           state.drainingBackends.get(backendId) match {
             case Some(backend) =>
-              log.info("Backend {} fully drained, stopping", backendId)
-              backend.runner ! LlamaBackendRunner.Command.Stop
-
-              val updatedState = state.copy(
-                drainingBackends = state.drainingBackends - backendId,
-                allocatedPorts = state.allocatedPorts - backend.port
+              log.info(
+                "Backend {} fully drained, requesting stop; waiting for BackendStopped",
+                backendId
               )
-
-              state.pendingStarts.headOption match {
-                case Some(pending) =>
-                  log.info(
-                    "Processing pending start for backend {} after drain",
-                    pending.backendConfig.id
-                  )
-                  pending.backendConfig.upstream_url match {
-                    case Some(upstream_url) =>
-                      pending.backendConfig.command match {
-                        case Some(command) =>
-                          startBackendWithUpstreamUrl(
-                            context,
-                            updatedState.copy(pendingStarts =
-                              updatedState.pendingStarts.tail
-                            ),
-                            pending.backendConfig,
-                            command,
-                            upstream_url,
-                            pending.requiredMemory,
-                            pending.replyTo
-                          )
-                        case None =>
-                          log.error(
-                            "Pending backend {} missing command",
-                            pending.backendConfig.id
-                          )
-                          pending.replyTo ! BackendResponse.Failed(
-                            "Backend missing command"
-                          )
-                          active(
-                            updatedState.copy(pendingStarts =
-                              updatedState.pendingStarts.tail
-                            )
-                          )
-                      }
-                    case None =>
-                      startBackend(
-                        context,
-                        updatedState.copy(pendingStarts =
-                          updatedState.pendingStarts.tail
-                        ),
-                        pending.backendConfig,
-                        pending.requiredMemory,
-                        pending.replyTo
-                      )
-                  }
-                case None =>
-                  active(updatedState)
-              }
+              backend.runner ! LlamaBackendRunner.Command.Stop
+              Behaviors.same
 
             case None =>
               log.warn(
@@ -814,6 +786,55 @@ object LlamaBackendSupervisor extends Logging {
       }.flatten
     }
 
+    def processNextPendingStart(
+        state: SupervisorState
+    ): Behavior[Command] =
+      state.pendingStarts.headOption match {
+        case None =>
+          active(state)
+
+        case Some(pending) =>
+          log.info(
+            "Processing pending start for backend {}",
+            pending.backendConfig.id
+          )
+          val nextState =
+            state.copy(pendingStarts = state.pendingStarts.tail)
+
+          pending.backendConfig.upstream_url match {
+            case Some(upstream_url) =>
+              pending.backendConfig.command match {
+                case Some(command) =>
+                  startBackendWithUpstreamUrl(
+                    context,
+                    nextState,
+                    pending.backendConfig,
+                    command,
+                    upstream_url,
+                    pending.requiredMemory,
+                    pending.replyTo
+                  )
+                case None =>
+                  log.error(
+                    "Pending backend {} missing command",
+                    pending.backendConfig.id
+                  )
+                  pending.replyTo ! BackendResponse.Failed(
+                    "Backend missing command"
+                  )
+                  active(nextState)
+              }
+            case None =>
+              startBackend(
+                context,
+                nextState,
+                pending.backendConfig,
+                pending.requiredMemory,
+                pending.replyTo
+              )
+          }
+      }
+
     def handleFirstAvailableBackend(
         state: SupervisorState,
         backendConfig: BackendConfig,
@@ -880,6 +901,29 @@ object LlamaBackendSupervisor extends Logging {
           )
           replyTo ! BackendResponse.Failed("No available backend")
           Behaviors.same
+
+        case backendId :: remaining if state.drainingBackends.contains(backendId) =>
+          if (remaining.nonEmpty) {
+            log.debug(
+              "First-available backend {} skipping draining backend {}, trying next",
+              firstAvailableId,
+              backendId
+            )
+            attemptFirstAvailableBackend(
+              state,
+              firstAvailableId,
+              remaining,
+              replyTo
+            )
+          } else {
+            log.info(
+              "First-available backend {} sole candidate {} is draining, reporting as starting",
+              firstAvailableId,
+              backendId
+            )
+            replyTo ! BackendResponse.Starting
+            Behaviors.same
+          }
 
         case backendId :: remaining =>
           log.debug(
@@ -1628,7 +1672,8 @@ object LlamaBackendSupervisor extends Logging {
   private def calculateUsedMemory(state: SupervisorState): Long = {
     val runningMemory = state.runningBackends.values.map(_.memoryUsed).sum
     val startingMemory = state.startingBackends.values.map(_.memoryReserved).sum
-    runningMemory + startingMemory
+    val drainingMemory = state.drainingBackends.values.map(_.memoryUsed).sum
+    runningMemory + startingMemory + drainingMemory
   }
 
   private def evictBackendsForMemory(
