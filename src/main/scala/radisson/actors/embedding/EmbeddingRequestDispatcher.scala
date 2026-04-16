@@ -21,6 +21,21 @@ object EmbeddingRequestDispatcher extends Logging {
   private val BackendStartRetryDelay = 3.seconds
   private val DefaultStartupTimeout = 60 // seconds
 
+  // context.messageAdapter only keeps one function per message class, so
+  // concurrent adapters for the same class race each other. Use a dedicated
+  // spawned actor per response instead.
+  private def spawnResponseAdapter(
+      context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+      f: LlamaBackendSupervisor.BackendResponse => Command
+  ): ActorRef[LlamaBackendSupervisor.BackendResponse] =
+    context.spawnAnonymous(
+      Behaviors.receiveMessage[LlamaBackendSupervisor.BackendResponse] {
+        response =>
+          context.self ! f(response)
+          Behaviors.same
+      }
+    )
+
   private def maxRetriesFor(backendId: String, config: AppConfig): Int = {
     val timeout = config.backends
       .find(_.id == backendId)
@@ -117,13 +132,15 @@ object EmbeddingRequestDispatcher extends Logging {
               state.backendSupervisor ! LlamaBackendSupervisor.Command
                 .RequestBackend(
                   backend.id,
-                  context.messageAdapter(response =>
-                    Command.BackendResolved(
-                      backend.id,
-                      response,
-                      request,
-                      replyTo
-                    )
+                  spawnResponseAdapter(
+                    context,
+                    response =>
+                      Command.BackendResolved(
+                        backend.id,
+                        response,
+                        request,
+                        replyTo
+                      )
                   )
                 )
               Behaviors.same
@@ -188,17 +205,17 @@ object EmbeddingRequestDispatcher extends Logging {
 
             case LlamaBackendSupervisor.BackendResponse.Starting
                 if retryCount < maxRetriesFor(backendId, state.config) =>
-              val responseAdapter =
-                context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                  response =>
-                    Command.BackendResolved(
-                      backendId,
-                      response,
-                      request,
-                      replyTo,
-                      retryCount + 1
-                    )
-                }
+              val responseAdapter = spawnResponseAdapter(
+                context,
+                response =>
+                  Command.BackendResolved(
+                    backendId,
+                    response,
+                    request,
+                    replyTo,
+                    retryCount + 1
+                  )
+              )
               context.scheduleOnce(
                 BackendStartRetryDelay,
                 state.backendSupervisor,

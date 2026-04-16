@@ -58,7 +58,7 @@ object HealthChecker {
       delay: FiniteDuration
   )(implicit scheduler: Scheduler, ec: ExecutionContext): Future[Unit] = {
     val promise = Promise[Unit]()
-    scheduler.scheduleOnce(delay, () => promise.success(()))
+    scheduler.scheduleOnce(delay)(promise.success(()))
     promise.future
   }
 }
