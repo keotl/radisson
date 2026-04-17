@@ -1,7 +1,6 @@
 package radisson.actors.backend
 
 import scala.concurrent.duration._
-import scala.sys.process._
 import scala.util.{Failure, Success, Try}
 
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
@@ -25,7 +24,7 @@ object LlamaBackendRunner extends Logging {
     case Stop
     case ForceKill
     case GetStatus(replyTo: ActorRef[StatusResponse])
-    case ProcessStarted(process: Process)
+    case ProcessStarted(process: java.lang.Process)
     case ProcessFailed(cause: Throwable)
     case ProcessExited(exitCode: Int)
     case HealthCheckResult(isHealthy: Boolean)
@@ -53,10 +52,10 @@ object LlamaBackendRunner extends Logging {
     case Running(
         backendId: String,
         port: Int,
-        process: Process,
+        process: java.lang.Process,
         replyTo: ActorRef[LlamaBackendSupervisor.Command]
     )
-    case Stopping(process: Process)
+    case Stopping(process: java.lang.Process)
     case Stopped
     case Failed(reason: String)
   }
@@ -81,14 +80,13 @@ object LlamaBackendRunner extends Logging {
 
         val substitutedCommand = ProcessManager.substitutePort(command, port)
 
-        val processLogger = ProcessLogger(
-          stdout => log.debug("[{}] {}", backendId, stdout),
-          stderr => log.warn("[{}] {}", backendId, stderr)
-        )
-
         val processBuilder = ProcessManager.buildProcess(substitutedCommand)
         val processFuture =
-          ProcessManager.startProcessAsync(processBuilder, processLogger)
+          ProcessManager.startProcessAsync(
+            processBuilder,
+            stdout => log.debug("[{}] {}", backendId, stdout),
+            stderr => log.warn("[{}] {}", backendId, stderr)
+          )
 
         context.pipeToSelf(processFuture) {
           case Success(process) => Command.ProcessStarted(process)
@@ -118,7 +116,7 @@ object LlamaBackendRunner extends Logging {
         log.info("Backend {} process started, checking health", backendId)
 
         context.pipeToSelf(scala.concurrent.Future {
-          process.exitValue()
+          process.waitFor()
         }) { exitCode =>
           Command.ProcessExited(exitCode.getOrElse(-1))
         }
@@ -190,7 +188,7 @@ object LlamaBackendRunner extends Logging {
     def waitingForHealth(
         backendId: String,
         port: Int,
-        process: Process,
+        process: java.lang.Process,
         replyTo: ActorRef[LlamaBackendSupervisor.Command]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.HealthCheckResult(isHealthy) =>
@@ -248,7 +246,7 @@ object LlamaBackendRunner extends Logging {
     def running(
         backendId: String,
         port: Int,
-        process: Process,
+        process: java.lang.Process,
         replyTo: ActorRef[LlamaBackendSupervisor.Command]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.ProcessExited(exitCode) =>
@@ -264,7 +262,7 @@ object LlamaBackendRunner extends Logging {
         log.info("Stopping backend {}", backendId)
         process.destroy()
         context.scheduleOnce(
-          10.seconds,
+          30.seconds,
           context.self,
           Command.ForceKill
         )
@@ -281,7 +279,7 @@ object LlamaBackendRunner extends Logging {
 
     def stopping(
         backendId: String,
-        process: Process,
+        process: java.lang.Process,
         replyTo: ActorRef[LlamaBackendSupervisor.Command]
     ): Behavior[Command] =
       Behaviors.receiveMessage {
@@ -293,11 +291,13 @@ object LlamaBackendRunner extends Logging {
         case Command.ForceKill =>
           if (process.isAlive()) {
             log.warn(
-              "Backend {} did not exit 10s after graceful stop; process may be wedged",
+              "Backend {} did not exit 10s after SIGTERM; sending SIGKILL",
               backendId
             )
+            process.destroyForcibly()
           }
-          Behaviors.same
+          replyTo ! LlamaBackendSupervisor.Command.BackendStopped(backendId)
+          stopped()
 
         case Command.GetStatus(replyTo) =>
           replyTo ! StatusResponse.Stopping
