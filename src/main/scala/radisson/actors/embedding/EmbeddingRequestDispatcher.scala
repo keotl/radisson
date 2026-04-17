@@ -1,6 +1,5 @@
 package radisson.actors.embedding
 
-import scala.collection.immutable
 import scala.concurrent.duration._
 
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
@@ -22,6 +21,21 @@ object EmbeddingRequestDispatcher extends Logging {
   private val BackendStartRetryDelay = 3.seconds
   private val DefaultStartupTimeout = 60 // seconds
 
+  // context.messageAdapter only keeps one function per message class, so
+  // concurrent adapters for the same class race each other. Use a dedicated
+  // spawned actor per response instead.
+  private def spawnResponseAdapter(
+      context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+      f: LlamaBackendSupervisor.BackendResponse => Command
+  ): ActorRef[LlamaBackendSupervisor.BackendResponse] =
+    context.spawnAnonymous(
+      Behaviors.receiveMessage[LlamaBackendSupervisor.BackendResponse] {
+        response =>
+          context.self ! f(response)
+          Behaviors.same
+      }
+    )
+
   private def maxRetriesFor(backendId: String, config: AppConfig): Int = {
     val timeout = config.backends
       .find(_.id == backendId)
@@ -29,24 +43,6 @@ object EmbeddingRequestDispatcher extends Logging {
       .getOrElse(DefaultStartupTimeout)
     (timeout / BackendStartRetryDelay.toSeconds).toInt.max(1)
   }
-
-  enum RequestPriority(val value: Int) {
-    case RunningBackend extends RequestPriority(1)
-    case StartingBackend extends RequestPriority(2)
-    case NewBackend extends RequestPriority(3)
-  }
-
-  case class QueuedRequest(
-      request: EmbeddingRequest,
-      backendId: String,
-      requestId: String,
-      queuedAt: Long,
-      replyTo: ActorRef[EmbeddingCompletionResponse],
-      priority: RequestPriority
-  )
-
-  given Ordering[QueuedRequest] =
-    Ordering.by(req => (req.priority.value, req.queuedAt))
 
   enum Command {
     case Initialize(
@@ -74,8 +70,6 @@ object EmbeddingRequestDispatcher extends Logging {
         actor: ActorRef[?]
     )
 
-    case ProcessQueue
-
     case BeginDraining(backendId: String)
     case CheckDrainComplete(backendId: String)
   }
@@ -95,7 +89,6 @@ object EmbeddingRequestDispatcher extends Logging {
       backendSupervisor: ActorRef[LlamaBackendSupervisor.Command],
       activeRequests: Map[String, RequestInfo],
       backendInFlightRequests: Map[String, Set[String]],
-      pendingQueue: immutable.Queue[QueuedRequest],
       drainingBackends: Set[String],
       requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   )
@@ -111,7 +104,6 @@ object EmbeddingRequestDispatcher extends Logging {
             backendSupervisor = backendSupervisor,
             activeRequests = Map.empty,
             backendInFlightRequests = Map.empty,
-            pendingQueue = immutable.Queue.empty,
             drainingBackends = Set.empty,
             requestTracer = requestTracer
           )
@@ -140,13 +132,15 @@ object EmbeddingRequestDispatcher extends Logging {
               state.backendSupervisor ! LlamaBackendSupervisor.Command
                 .RequestBackend(
                   backend.id,
-                  context.messageAdapter(response =>
-                    Command.BackendResolved(
-                      backend.id,
-                      response,
-                      request,
-                      replyTo
-                    )
+                  spawnResponseAdapter(
+                    context,
+                    response =>
+                      Command.BackendResolved(
+                        backend.id,
+                        response,
+                        request,
+                        replyTo
+                      )
                   )
                 )
               Behaviors.same
@@ -211,15 +205,23 @@ object EmbeddingRequestDispatcher extends Logging {
 
             case LlamaBackendSupervisor.BackendResponse.Starting
                 if retryCount < maxRetriesFor(backendId, state.config) =>
+              val responseAdapter = spawnResponseAdapter(
+                context,
+                response =>
+                  Command.BackendResolved(
+                    backendId,
+                    response,
+                    request,
+                    replyTo,
+                    retryCount + 1
+                  )
+              )
               context.scheduleOnce(
                 BackendStartRetryDelay,
-                context.self,
-                Command.BackendResolved(
+                state.backendSupervisor,
+                LlamaBackendSupervisor.Command.RequestBackend(
                   backendId,
-                  LlamaBackendSupervisor.BackendResponse.Starting,
-                  request,
-                  replyTo,
-                  retryCount + 1
+                  responseAdapter
                 )
               )
               Behaviors.same
@@ -268,12 +270,7 @@ object EmbeddingRequestDispatcher extends Logging {
             context.self ! Command.CheckDrainComplete(backendId)
           }
 
-          context.self ! Command.ProcessQueue
-
           active(newState)
-
-        case Command.ProcessQueue =>
-          Behaviors.same
 
         case Command.BeginDraining(backendId) =>
           log.info("Beginning drain for backend: {}", backendId)

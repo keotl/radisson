@@ -23,6 +23,7 @@ object LlamaBackendRunner extends Logging {
         startupTimeout: Option[Int] = None
     )
     case Stop
+    case ForceKill
     case GetStatus(replyTo: ActorRef[StatusResponse])
     case ProcessStarted(process: Process)
     case ProcessFailed(cause: Throwable)
@@ -62,6 +63,8 @@ object LlamaBackendRunner extends Logging {
 
   def behavior: Behavior[Command] = Behaviors.setup { context =>
     given ec: scala.concurrent.ExecutionContext = context.executionContext
+    given scheduler: org.apache.pekko.actor.Scheduler =
+      context.system.classicSystem.scheduler
     given sttpBackend: Backend[scala.concurrent.Future] =
       HttpClientFutureBackend()
 
@@ -114,9 +117,6 @@ object LlamaBackendRunner extends Logging {
       case Command.ProcessStarted(process) =>
         log.info("Backend {} process started, checking health", backendId)
 
-        val exitFuture = context.executionContext.execute { () =>
-          process.exitValue()
-        }
         context.pipeToSelf(scala.concurrent.Future {
           process.exitValue()
         }) { exitCode =>
@@ -263,20 +263,12 @@ object LlamaBackendRunner extends Logging {
       case Command.Stop =>
         log.info("Stopping backend {}", backendId)
         process.destroy()
-
-        val timeoutFuture = scala.concurrent.Future {
-          Thread.sleep(30000)
-          if (process.isAlive()) {
-            log.warn("Backend {} did not stop gracefully after 30s", backendId)
-          }
-          Try(process.exitValue()).getOrElse(-1)
-        }
-
-        context.pipeToSelf(timeoutFuture) { _ =>
-          Command.ProcessExited(0)
-        }
-
-        stopping(process)
+        context.scheduleOnce(
+          10.seconds,
+          context.self,
+          Command.ForceKill
+        )
+        stopping(backendId, process, replyTo)
 
       case Command.GetStatus(replyTo) =>
         replyTo ! StatusResponse.Running(port)
@@ -287,11 +279,25 @@ object LlamaBackendRunner extends Logging {
         Behaviors.same
     }
 
-    def stopping(process: Process): Behavior[Command] =
+    def stopping(
+        backendId: String,
+        process: Process,
+        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+    ): Behavior[Command] =
       Behaviors.receiveMessage {
         case Command.ProcessExited(_) =>
-          log.info("Backend process stopped")
+          log.info("Backend {} process stopped", backendId)
+          replyTo ! LlamaBackendSupervisor.Command.BackendStopped(backendId)
           stopped()
+
+        case Command.ForceKill =>
+          if (process.isAlive()) {
+            log.warn(
+              "Backend {} did not exit 10s after graceful stop; process may be wedged",
+              backendId
+            )
+          }
+          Behaviors.same
 
         case Command.GetStatus(replyTo) =>
           replyTo ! StatusResponse.Stopping

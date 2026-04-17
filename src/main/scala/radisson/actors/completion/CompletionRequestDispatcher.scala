@@ -29,12 +29,6 @@ object CompletionRequestDispatcher extends Logging {
     (timeout / BackendStartRetryDelay.toSeconds).toInt.max(1)
   }
 
-  enum RequestPriority(val value: Int) {
-    case RunningBackend extends RequestPriority(1)
-    case StartingBackend extends RequestPriority(2)
-    case NewBackend extends RequestPriority(3)
-  }
-
   case class QueuedRequest(
       request: ChatCompletionRequest,
       backendId: String,
@@ -46,12 +40,24 @@ object CompletionRequestDispatcher extends Logging {
           StreamingCompletionRequestActor.ChunkMessage
         ]
       ],
-      isStreaming: Boolean,
-      priority: RequestPriority
+      isStreaming: Boolean
   )
 
-  given Ordering[QueuedRequest] =
-    Ordering.by(req => (req.priority.value, req.queuedAt))
+  // context.messageAdapter only keeps one function per message class — a second
+  // call for the same class replaces the first, leaving earlier adapters dead.
+  // Use a dedicated spawned actor per response so concurrent requests each
+  // get their own live forwarder.
+  private def spawnResponseAdapter(
+      context: org.apache.pekko.actor.typed.scaladsl.ActorContext[Command],
+      f: LlamaBackendSupervisor.BackendResponse => Command
+  ): ActorRef[LlamaBackendSupervisor.BackendResponse] =
+    context.spawnAnonymous(
+      Behaviors.receiveMessage[LlamaBackendSupervisor.BackendResponse] {
+        response =>
+          context.self ! f(response)
+          Behaviors.same
+      }
+    )
 
   private object QueueAdapter {
     def behavior(
@@ -59,15 +65,26 @@ object CompletionRequestDispatcher extends Logging {
           StreamingCompletionRequestActor.ChunkMessage
         ]
     ): Behavior[StreamingCompletionRequestActor.ChunkMessage] =
-      Behaviors.receive { (context, message) =>
-        queue.offer(message)
-        message match {
-          case StreamingCompletionRequestActor.ChunkMessage.Completed |
-              StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
-            queue.complete()
-            Behaviors.stopped
-          case _ =>
-            Behaviors.same
+      Behaviors.setup { context =>
+        given ec: scala.concurrent.ExecutionContext =
+          context.executionContext
+        // Pekko's Source.queue with OverflowStrategy.backpressure requires that
+        // each offer's Future complete before the next offer is issued. Chain
+        // offers via flatMap so only one is in flight at any time; otherwise a
+        // backpressured consumer would cause the second offer to fail.
+        var pending: scala.concurrent.Future[Any] =
+          scala.concurrent.Future.successful(())
+
+        Behaviors.receiveMessage { message =>
+          pending = pending.flatMap(_ => queue.offer(message))
+          message match {
+            case StreamingCompletionRequestActor.ChunkMessage.Completed |
+                StreamingCompletionRequestActor.ChunkMessage.Failed(_, _) =>
+              pending.onComplete(_ => queue.complete())
+              Behaviors.stopped
+            case _ =>
+              Behaviors.same
+          }
         }
       }
   }
@@ -93,6 +110,7 @@ object CompletionRequestDispatcher extends Logging {
     )
 
     case BackendResolved(
+        requestId: String,
         backendId: String,
         backendResponse: LlamaBackendSupervisor.BackendResponse,
         request: ChatCompletionRequest,
@@ -140,6 +158,10 @@ object CompletionRequestDispatcher extends Logging {
       backendInFlightRequests: Map[String, Set[String]],
       pendingQueue: immutable.Queue[QueuedRequest],
       drainingBackends: Set[String],
+      // Requests that already got a terminal response. Kept so that orphan
+      // retries (scheduleOnce already in flight when the request completed)
+      // don't trigger duplicate spawns or backend evictions.
+      completedRequests: Set[String],
       requestTracer: Option[ActorRef[RequestTracer.Command]] = None
   )
 
@@ -156,6 +178,7 @@ object CompletionRequestDispatcher extends Logging {
             backendInFlightRequests = Map.empty,
             pendingQueue = immutable.Queue.empty,
             drainingBackends = Set.empty,
+            completedRequests = Set.empty,
             requestTracer = requestTracer
           )
         )
@@ -181,8 +204,7 @@ object CompletionRequestDispatcher extends Logging {
                 requestId = requestId,
                 queuedAt = System.currentTimeMillis(),
                 replyTo = Left(replyTo),
-                isStreaming = false,
-                priority = RequestPriority.NewBackend
+                isStreaming = false
               )
 
               log.debug(
@@ -216,8 +238,7 @@ object CompletionRequestDispatcher extends Logging {
                 requestId = requestId,
                 queuedAt = System.currentTimeMillis(),
                 replyTo = Right(queue),
-                isStreaming = true,
-                priority = RequestPriority.NewBackend
+                isStreaming = true
               )
 
               log.debug(
@@ -233,12 +254,20 @@ object CompletionRequestDispatcher extends Logging {
           }
 
         case Command.BackendResolved(
+              requestId,
               backendId,
               backendResponse,
               request,
               replyTo,
               retryCount
             ) =>
+          if state.activeRequests.contains(requestId) || state.completedRequests.contains(requestId) then
+            log.debug(
+              "Request {} is already active or completed, ignoring duplicate backend resolution",
+              requestId
+            )
+            Behaviors.same
+          else
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
               val maxRetries = maxRetriesFor(backendId, state.config)
@@ -267,18 +296,18 @@ object CompletionRequestDispatcher extends Logging {
                   maxRetries
                 )
 
-                val responseAdapter =
-                  context
-                    .messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                      response =>
-                        Command.BackendResolved(
-                          backendId,
-                          response,
-                          request,
-                          replyTo,
-                          retryCount + 1
-                        )
-                    }
+                val responseAdapter = spawnResponseAdapter(
+                  context,
+                  response =>
+                    Command.BackendResolved(
+                      requestId,
+                      backendId,
+                      response,
+                      request,
+                      replyTo,
+                      retryCount + 1
+                    )
+                )
 
                 context.scheduleOnce(
                   BackendStartRetryDelay,
@@ -292,7 +321,6 @@ object CompletionRequestDispatcher extends Logging {
 
             case LlamaBackendSupervisor.BackendResponse
                   .Available(endpoint, port, resolvedBackendId) =>
-              val requestId = java.util.UUID.randomUUID().toString
               val configId = resolvedBackendId.getOrElse(backendId)
               val backendConfig =
                 state.config.backends.find(_.id == configId).get
@@ -358,6 +386,13 @@ object CompletionRequestDispatcher extends Logging {
               queue,
               retryCount
             ) =>
+          if state.activeRequests.contains(requestId) || state.completedRequests.contains(requestId) then
+            log.debug(
+              "Streaming request {} is already active or completed, ignoring duplicate backend resolution",
+              requestId
+            )
+            Behaviors.same
+          else
           backendResponse match {
             case LlamaBackendSupervisor.BackendResponse.Starting =>
               val maxRetries = maxRetriesFor(backendId, state.config)
@@ -384,19 +419,18 @@ object CompletionRequestDispatcher extends Logging {
                   maxRetries
                 )
 
-                val responseAdapter =
-                  context
-                    .messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                      response =>
-                        Command.StreamingBackendResolved(
-                          requestId,
-                          backendId,
-                          response,
-                          request,
-                          queue,
-                          retryCount + 1
-                        )
-                    }
+                val responseAdapter = spawnResponseAdapter(
+                  context,
+                  response =>
+                    Command.StreamingBackendResolved(
+                      requestId,
+                      backendId,
+                      response,
+                      request,
+                      queue,
+                      retryCount + 1
+                    )
+                )
 
                 context.scheduleOnce(
                   BackendStartRetryDelay,
@@ -410,9 +444,9 @@ object CompletionRequestDispatcher extends Logging {
 
             case LlamaBackendSupervisor.BackendResponse
                   .Available(endpoint, port, resolvedBackendId) =>
-              if state.activeRequests.contains(requestId) then
+              if state.activeRequests.contains(requestId) || state.completedRequests.contains(requestId) then
                 log.debug(
-                  "Request {} already has an active streaming actor, ignoring duplicate backend resolution",
+                  "Request {} is already active or completed, ignoring duplicate streaming backend resolution",
                   requestId
                 )
                 Behaviors.same
@@ -497,6 +531,7 @@ object CompletionRequestDispatcher extends Logging {
 
           val newState = state.copy(
             activeRequests = state.activeRequests - requestId,
+            completedRequests = state.completedRequests + requestId,
             backendInFlightRequests = updatedInFlight match {
               case Some(requests) =>
                 state.backendInFlightRequests + (backendId -> requests)
@@ -528,25 +563,24 @@ object CompletionRequestDispatcher extends Logging {
           else
             val (queuedRequest, remainingQueue) = state.pendingQueue.dequeue
             log.debug(
-              "Processing queued request {} for backend {} (queued at {}, priority {})",
+              "Processing queued request {} for backend {} (queued at {})",
               queuedRequest.requestId,
               queuedRequest.backendId,
-              queuedRequest.queuedAt,
-              queuedRequest.priority
+              queuedRequest.queuedAt
             )
 
             if queuedRequest.isStreaming then
-              val responseAdapter =
-                context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                  response =>
-                    Command.StreamingBackendResolved(
-                      queuedRequest.requestId,
-                      queuedRequest.backendId,
-                      response,
-                      queuedRequest.request,
-                      queuedRequest.replyTo.toOption.get
-                    )
-                }
+              val responseAdapter = spawnResponseAdapter(
+                context,
+                response =>
+                  Command.StreamingBackendResolved(
+                    queuedRequest.requestId,
+                    queuedRequest.backendId,
+                    response,
+                    queuedRequest.request,
+                    queuedRequest.replyTo.toOption.get
+                  )
+              )
 
               state.backendSupervisor ! LlamaBackendSupervisor.Command
                 .RequestBackend(
@@ -554,16 +588,17 @@ object CompletionRequestDispatcher extends Logging {
                   responseAdapter
                 )
             else
-              val responseAdapter =
-                context.messageAdapter[LlamaBackendSupervisor.BackendResponse] {
-                  response =>
-                    Command.BackendResolved(
-                      queuedRequest.backendId,
-                      response,
-                      queuedRequest.request,
-                      queuedRequest.replyTo.left.get
-                    )
-                }
+              val responseAdapter = spawnResponseAdapter(
+                context,
+                response =>
+                  Command.BackendResolved(
+                    queuedRequest.requestId,
+                    queuedRequest.backendId,
+                    response,
+                    queuedRequest.request,
+                    queuedRequest.replyTo.left.get
+                  )
+              )
 
               state.backendSupervisor ! LlamaBackendSupervisor.Command
                 .RequestBackend(

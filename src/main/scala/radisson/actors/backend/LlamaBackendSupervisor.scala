@@ -201,6 +201,15 @@ object LlamaBackendSupervisor extends Logging {
 
     def active(state: SupervisorState): Behavior[Command] =
       Behaviors.receiveMessage {
+        case Command.RequestBackend(backendId, replyTo)
+            if state.drainingBackends.contains(backendId) =>
+          log.info(
+            "Backend {} is draining, reporting as starting so caller retries after drain completes",
+            backendId
+          )
+          replyTo ! BackendResponse.Starting
+          Behaviors.same
+
         case Command.RequestBackend(backendId, replyTo) =>
           state.runningBackends.get(backendId) match {
             case Some(backend) =>
@@ -454,7 +463,7 @@ object LlamaBackendSupervisor extends Logging {
         case Command.BackendStopped(backendId) =>
           state.runningBackends.get(backendId) match {
             case Some(backend) =>
-              log.info("Backend {} stopped", backendId)
+              log.info("Backend {} stopped (was running)", backendId)
 
               active(
                 state.copy(
@@ -464,11 +473,25 @@ object LlamaBackendSupervisor extends Logging {
               )
 
             case None =>
-              log.warn(
-                "Received BackendStopped for unknown backend {}",
-                backendId
-              )
-              Behaviors.same
+              state.drainingBackends.get(backendId) match {
+                case Some(backend) =>
+                  log.info(
+                    "Backend {} stopped (drain complete), processing pending starts",
+                    backendId
+                  )
+                  val cleaned = state.copy(
+                    drainingBackends = state.drainingBackends - backendId,
+                    allocatedPorts = state.allocatedPorts - backend.port
+                  )
+                  processNextPendingStart(cleaned)
+
+                case None =>
+                  log.warn(
+                    "Received BackendStopped for unknown backend {}",
+                    backendId
+                  )
+                  Behaviors.same
+              }
           }
 
         case Command.StopBackend(backendId) =>
@@ -494,63 +517,12 @@ object LlamaBackendSupervisor extends Logging {
         case Command.BackendDrained(backendId) =>
           state.drainingBackends.get(backendId) match {
             case Some(backend) =>
-              log.info("Backend {} fully drained, stopping", backendId)
-              backend.runner ! LlamaBackendRunner.Command.Stop
-
-              val updatedState = state.copy(
-                drainingBackends = state.drainingBackends - backendId,
-                allocatedPorts = state.allocatedPorts - backend.port
+              log.info(
+                "Backend {} fully drained, requesting stop; waiting for BackendStopped",
+                backendId
               )
-
-              state.pendingStarts.headOption match {
-                case Some(pending) =>
-                  log.info(
-                    "Processing pending start for backend {} after drain",
-                    pending.backendConfig.id
-                  )
-                  pending.backendConfig.upstream_url match {
-                    case Some(upstream_url) =>
-                      pending.backendConfig.command match {
-                        case Some(command) =>
-                          startBackendWithUpstreamUrl(
-                            context,
-                            updatedState.copy(pendingStarts =
-                              updatedState.pendingStarts.tail
-                            ),
-                            pending.backendConfig,
-                            command,
-                            upstream_url,
-                            pending.requiredMemory,
-                            pending.replyTo
-                          )
-                        case None =>
-                          log.error(
-                            "Pending backend {} missing command",
-                            pending.backendConfig.id
-                          )
-                          pending.replyTo ! BackendResponse.Failed(
-                            "Backend missing command"
-                          )
-                          active(
-                            updatedState.copy(pendingStarts =
-                              updatedState.pendingStarts.tail
-                            )
-                          )
-                      }
-                    case None =>
-                      startBackend(
-                        context,
-                        updatedState.copy(pendingStarts =
-                          updatedState.pendingStarts.tail
-                        ),
-                        pending.backendConfig,
-                        pending.requiredMemory,
-                        pending.replyTo
-                      )
-                  }
-                case None =>
-                  active(updatedState)
-              }
+              backend.runner ! LlamaBackendRunner.Command.Stop
+              Behaviors.same
 
             case None =>
               log.warn(
@@ -814,6 +786,57 @@ object LlamaBackendSupervisor extends Logging {
       }.flatten
     }
 
+    def processNextPendingStart(
+        state: SupervisorState
+    ): Behavior[Command] =
+      state.pendingStarts.headOption match {
+        case None =>
+          active(state)
+
+        case Some(pending) =>
+          log.info(
+            "Processing pending start for backend {}",
+            pending.backendConfig.id
+          )
+          val nextState =
+            state.copy(pendingStarts = state.pendingStarts.tail)
+
+          pending.backendConfig.upstream_url match {
+            case Some(upstream_url) =>
+              pending.backendConfig.command match {
+                case Some(command) =>
+                  startBackendWithUpstreamUrl(
+                    context,
+                    nextState,
+                    pending.backendConfig,
+                    command,
+                    upstream_url,
+                    pending.requiredMemory,
+                    pending.replyTo,
+                    notifyReplyTo = false
+                  )
+                case None =>
+                  log.error(
+                    "Pending backend {} missing command",
+                    pending.backendConfig.id
+                  )
+                  pending.replyTo ! BackendResponse.Failed(
+                    "Backend missing command"
+                  )
+                  active(nextState)
+              }
+            case None =>
+              startBackend(
+                context,
+                nextState,
+                pending.backendConfig,
+                pending.requiredMemory,
+                pending.replyTo,
+                notifyReplyTo = false
+              )
+          }
+      }
+
     def handleFirstAvailableBackend(
         state: SupervisorState,
         backendConfig: BackendConfig,
@@ -880,6 +903,29 @@ object LlamaBackendSupervisor extends Logging {
           )
           replyTo ! BackendResponse.Failed("No available backend")
           Behaviors.same
+
+        case backendId :: remaining if state.drainingBackends.contains(backendId) =>
+          if (remaining.nonEmpty) {
+            log.debug(
+              "First-available backend {} skipping draining backend {}, trying next",
+              firstAvailableId,
+              backendId
+            )
+            attemptFirstAvailableBackend(
+              state,
+              firstAvailableId,
+              remaining,
+              replyTo
+            )
+          } else {
+            log.info(
+              "First-available backend {} sole candidate {} is draining, reporting as starting",
+              firstAvailableId,
+              backendId
+            )
+            replyTo ! BackendResponse.Starting
+            Behaviors.same
+          }
 
         case backendId :: remaining =>
           log.debug(
@@ -1002,6 +1048,19 @@ object LlamaBackendSupervisor extends Logging {
         backendId: String,
         replyTo: ActorRef[BackendResponse]
     ): Behavior[Command] = {
+      // context.messageAdapter only keeps one function per message class —
+      // spawning a dedicated forwarder per response avoids that race when
+      // multiple first-available starts run in parallel.
+      def spawnForwarder()
+          : ActorRef[BackendResponse] =
+        context.spawnAnonymous(
+          Behaviors.receiveMessage[BackendResponse] { response =>
+            context.self ! Command
+              .FirstAvailableBackendResolved(firstAvailableId, backendId, response)
+            Behaviors.same
+          }
+        )
+
       backendConfig.upstream_url match {
         case Some(upstream_url) =>
           backendConfig.resources match {
@@ -1025,14 +1084,7 @@ object LlamaBackendSupervisor extends Logging {
                       backendConfig.command.get,
                       upstream_url,
                       requiredMemory,
-                      context.messageAdapter(response =>
-                        LlamaBackendSupervisor.Command
-                          .FirstAvailableBackendResolved(
-                            firstAvailableId,
-                            backendId,
-                            response
-                          )
-                      )
+                      spawnForwarder()
                     )
                   } else {
                     evictAndStartWithUpstreamUrl(
@@ -1042,14 +1094,7 @@ object LlamaBackendSupervisor extends Logging {
                       backendConfig.command.get,
                       upstream_url,
                       requiredMemory,
-                      context.messageAdapter(response =>
-                        LlamaBackendSupervisor.Command
-                          .FirstAvailableBackendResolved(
-                            firstAvailableId,
-                            backendId,
-                            response
-                          )
-                      )
+                      spawnForwarder()
                     )
                   }
 
@@ -1094,13 +1139,7 @@ object LlamaBackendSupervisor extends Logging {
                 backendConfig.command.get,
                 upstream_url,
                 0L,
-                context.messageAdapter(response =>
-                  LlamaBackendSupervisor.Command.FirstAvailableBackendResolved(
-                    firstAvailableId,
-                    backendId,
-                    response
-                  )
-                )
+                spawnForwarder()
               )
           }
 
@@ -1125,14 +1164,7 @@ object LlamaBackendSupervisor extends Logging {
                       state,
                       backendConfig,
                       requiredMemory,
-                      context.messageAdapter(response =>
-                        LlamaBackendSupervisor.Command
-                          .FirstAvailableBackendResolved(
-                            firstAvailableId,
-                            backendId,
-                            response
-                          )
-                      )
+                      spawnForwarder()
                     )
                   } else {
                     evictAndStart(
@@ -1140,14 +1172,7 @@ object LlamaBackendSupervisor extends Logging {
                       state,
                       backendConfig,
                       requiredMemory,
-                      context.messageAdapter(response =>
-                        LlamaBackendSupervisor.Command
-                          .FirstAvailableBackendResolved(
-                            firstAvailableId,
-                            backendId,
-                            response
-                          )
-                      )
+                      spawnForwarder()
                     )
                   }
 
@@ -1224,6 +1249,15 @@ object LlamaBackendSupervisor extends Logging {
 
       if (state.startingBackends.contains(backendId)) {
         log.info("Backend {} is already starting", backendId)
+        replyTo ! BackendResponse.Starting
+        return Behaviors.same
+      }
+
+      if (state.pendingStarts.exists(_.backendConfig.id == backendId)) {
+        log.info(
+          "Backend {} has a pending start queued, reporting as starting",
+          backendId
+        )
         replyTo ! BackendResponse.Starting
         return Behaviors.same
       }
@@ -1355,7 +1389,8 @@ object LlamaBackendSupervisor extends Logging {
         state: SupervisorState,
         backendConfig: BackendConfig,
         requiredMemory: Long,
-        replyTo: ActorRef[BackendResponse]
+        replyTo: ActorRef[BackendResponse],
+        notifyReplyTo: Boolean = true
     ): Behavior[Command] =
       backendConfig.command match {
         case Some(command) =>
@@ -1393,7 +1428,9 @@ object LlamaBackendSupervisor extends Logging {
                 port = port
               )
 
-              replyTo ! BackendResponse.Starting
+              if (notifyReplyTo) {
+                replyTo ! BackendResponse.Starting
+              }
 
               active(
                 state.copy(
@@ -1483,6 +1520,8 @@ object LlamaBackendSupervisor extends Logging {
           replyTo = replyTo
         )
 
+        replyTo ! BackendResponse.Starting
+
         active(
           state.copy(
             runningBackends = state.runningBackends -- runningToEvict,
@@ -1501,7 +1540,8 @@ object LlamaBackendSupervisor extends Logging {
         command: String,
         upstream_url: String,
         requiredMemory: Long,
-        replyTo: ActorRef[BackendResponse]
+        replyTo: ActorRef[BackendResponse],
+        notifyReplyTo: Boolean = true
     ): Behavior[Command] = {
       val uniqueId = java.util.UUID.randomUUID().toString.take(8)
       val runner = context.spawn(
@@ -1530,7 +1570,9 @@ object LlamaBackendSupervisor extends Logging {
         port = 0
       )
 
-      replyTo ! BackendResponse.Starting
+      if (notifyReplyTo) {
+        replyTo ! BackendResponse.Starting
+      }
 
       active(
         state.copy(
@@ -1610,6 +1652,8 @@ object LlamaBackendSupervisor extends Logging {
           replyTo = replyTo
         )
 
+        replyTo ! BackendResponse.Starting
+
         active(
           state.copy(
             runningBackends = state.runningBackends -- runningToEvict,
@@ -1628,7 +1672,8 @@ object LlamaBackendSupervisor extends Logging {
   private def calculateUsedMemory(state: SupervisorState): Long = {
     val runningMemory = state.runningBackends.values.map(_.memoryUsed).sum
     val startingMemory = state.startingBackends.values.map(_.memoryReserved).sum
-    runningMemory + startingMemory
+    val drainingMemory = state.drainingBackends.values.map(_.memoryUsed).sum
+    runningMemory + startingMemory + drainingMemory
   }
 
   private def evictBackendsForMemory(

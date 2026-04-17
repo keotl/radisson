@@ -71,7 +71,7 @@ test_streaming_requests_queue_properly() {
     local payload='{"model":"local-mock","messages":[{"role":"user","content":"Streaming queue test"}],"stream":true}'
     response=$(http_post_stream "http://$HOST:$PORT/v1/chat/completions" "$payload")
 
-    if echo "$response" | grep -q "data:" && echo "$response" | grep -q "[DONE]"; then
+    if echo "$response" | grep -q "data:" && echo "$response" | grep -qF "[DONE]"; then
         echo "  ✓ Streaming requests queue and complete properly"
         PASSED_TESTS=$((PASSED_TESTS + 1))
     else
@@ -107,7 +107,7 @@ test_mixed_streaming_and_non_streaming_requests() {
         (
             local payload='{"model":"local-mock","messages":[{"role":"user","content":"Streaming '"$i"'"}],"stream":true}'
             response=$(http_post_stream "http://$HOST:$PORT/v1/chat/completions" "$payload")
-            if echo "$response" | grep -q "[DONE]"; then
+            if echo "$response" | grep -qF "[DONE]"; then
                 echo "200" > "$temp_file"
             else
                 echo "500" > "$temp_file"
@@ -168,5 +168,5 @@ echo "Running Queue and Eviction Tests..."
 test_concurrent_requests_queue_properly
 test_backend_eviction_with_memory_pressure
 test_streaming_requests_queue_properly
-# test_mixed_streaming_and_non_streaming_requests
+test_mixed_streaming_and_non_streaming_requests
 test_backend_reuse_after_requests_complete
