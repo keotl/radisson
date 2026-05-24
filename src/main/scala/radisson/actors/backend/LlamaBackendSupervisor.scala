@@ -1418,7 +1418,8 @@ object LlamaBackendSupervisor extends Logging {
                 command,
                 port,
                 context.self,
-                startupTimeout = backendConfig.startup_timeout
+                startupTimeout = backendConfig.startup_timeout,
+                stopCommand = backendConfig.stop_command
               )
 
               val startingBackend = StartingBackend(
@@ -1560,7 +1561,8 @@ object LlamaBackendSupervisor extends Logging {
         0,
         context.self,
         Some(upstream_url),
-        backendConfig.startup_timeout
+        backendConfig.startup_timeout,
+        backendConfig.stop_command
       )
 
       val startingBackend = StartingBackend(
