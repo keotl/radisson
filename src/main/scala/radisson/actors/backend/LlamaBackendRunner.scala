@@ -19,7 +19,8 @@ object LlamaBackendRunner extends Logging {
         port: Int,
         replyTo: ActorRef[LlamaBackendSupervisor.Command],
         upstreamUrl: Option[String] = None,
-        startupTimeout: Option[Int] = None
+        startupTimeout: Option[Int] = None,
+        stopCommand: Option[String] = None
     )
     case Stop
     case ForceKill
@@ -27,6 +28,7 @@ object LlamaBackendRunner extends Logging {
     case ProcessStarted(process: java.lang.Process)
     case ProcessFailed(cause: Throwable)
     case ProcessExited(exitCode: Int)
+    case StopCommandCompleted(exitCode: Int)
     case HealthCheckResult(isHealthy: Boolean)
   }
 
@@ -74,7 +76,8 @@ object LlamaBackendRunner extends Logging {
             port,
             replyTo,
             upstreamUrl,
-            startupTimeout
+            startupTimeout,
+            stopCommand
           ) =>
         log.info("Starting backend {} on port {}", backendId, port)
 
@@ -93,7 +96,15 @@ object LlamaBackendRunner extends Logging {
           case Failure(cause)   => Command.ProcessFailed(cause)
         }
 
-        starting(backendId, command, port, replyTo, upstreamUrl, startupTimeout)
+        starting(
+          backendId,
+          command,
+          port,
+          replyTo,
+          upstreamUrl,
+          startupTimeout,
+          stopCommand
+        )
 
       case Command.GetStatus(replyTo) =>
         replyTo ! StatusResponse.Idle
@@ -110,7 +121,8 @@ object LlamaBackendRunner extends Logging {
         port: Int,
         replyTo: ActorRef[LlamaBackendSupervisor.Command],
         upstreamUrl: Option[String],
-        startupTimeout: Option[Int]
+        startupTimeout: Option[Int],
+        stopCommand: Option[String]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.ProcessStarted(process) =>
         log.info("Backend {} process started, checking health", backendId)
@@ -162,7 +174,7 @@ object LlamaBackendRunner extends Logging {
           Command.HealthCheckResult(isHealthy.getOrElse(false))
         }
 
-        waitingForHealth(backendId, port, process, replyTo)
+        waitingForHealth(backendId, port, process, replyTo, stopCommand)
 
       case Command.ProcessFailed(cause) =>
         log.error("Failed to start backend {} process", backendId, cause)
@@ -189,7 +201,8 @@ object LlamaBackendRunner extends Logging {
         backendId: String,
         port: Int,
         process: java.lang.Process,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        stopCommand: Option[String]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.HealthCheckResult(isHealthy) =>
         if (isHealthy) {
@@ -203,7 +216,7 @@ object LlamaBackendRunner extends Logging {
             port,
             context.self
           )
-          running(backendId, port, process, replyTo)
+          running(backendId, port, process, replyTo, stopCommand)
         } else {
           log.error("Backend {} health check failed after retries", backendId)
           Try(process.destroy())
@@ -247,7 +260,8 @@ object LlamaBackendRunner extends Logging {
         backendId: String,
         port: Int,
         process: java.lang.Process,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        stopCommand: Option[String]
     ): Behavior[Command] = Behaviors.receiveMessage {
       case Command.ProcessExited(exitCode) =>
         log.error(
@@ -261,12 +275,38 @@ object LlamaBackendRunner extends Logging {
       case Command.Stop =>
         log.info("Stopping backend {}", backendId)
         process.destroy()
+
+        val stopCommandPending = stopCommand match {
+          case Some(cmd) =>
+            log.info("Backend {} running stop_command: {}", backendId, cmd)
+            val pb = ProcessManager.buildProcess(cmd)
+            val stopFuture = ProcessManager
+              .startProcessAsync(
+                pb,
+                stdout => log.debug("[{} stop_command] {}", backendId, stdout),
+                stderr => log.warn("[{} stop_command] {}", backendId, stderr)
+              )
+              .flatMap(p => scala.concurrent.Future(p.waitFor()))
+            context.pipeToSelf(stopFuture) { result =>
+              Command.StopCommandCompleted(result.getOrElse(-1))
+            }
+            true
+          case None =>
+            false
+        }
+
         context.scheduleOnce(
           30.seconds,
           context.self,
           Command.ForceKill
         )
-        stopping(backendId, process, replyTo)
+        stopping(
+          backendId,
+          process,
+          replyTo,
+          processExited = false,
+          stopCommandPending = stopCommandPending
+        )
 
       case Command.GetStatus(replyTo) =>
         replyTo ! StatusResponse.Running(port)
@@ -280,18 +320,48 @@ object LlamaBackendRunner extends Logging {
     def stopping(
         backendId: String,
         process: java.lang.Process,
-        replyTo: ActorRef[LlamaBackendSupervisor.Command]
-    ): Behavior[Command] =
+        replyTo: ActorRef[LlamaBackendSupervisor.Command],
+        processExited: Boolean,
+        stopCommandPending: Boolean
+    ): Behavior[Command] = {
+      def finishIfReady(
+          nextProcessExited: Boolean,
+          nextStopPending: Boolean
+      ): Behavior[Command] =
+        if (nextProcessExited && !nextStopPending) {
+          replyTo ! LlamaBackendSupervisor.Command.BackendStopped(backendId)
+          stopped()
+        } else {
+          stopping(
+            backendId,
+            process,
+            replyTo,
+            processExited = nextProcessExited,
+            stopCommandPending = nextStopPending
+          )
+        }
+
       Behaviors.receiveMessage {
         case Command.ProcessExited(_) =>
           log.info("Backend {} process stopped", backendId)
-          replyTo ! LlamaBackendSupervisor.Command.BackendStopped(backendId)
-          stopped()
+          finishIfReady(nextProcessExited = true, nextStopPending = stopCommandPending)
+
+        case Command.StopCommandCompleted(exitCode) =>
+          if (exitCode == 0) {
+            log.info("Backend {} stop_command completed", backendId)
+          } else {
+            log.warn(
+              "Backend {} stop_command exited with code {}",
+              backendId,
+              exitCode
+            )
+          }
+          finishIfReady(nextProcessExited = processExited, nextStopPending = false)
 
         case Command.ForceKill =>
           if (process.isAlive()) {
             log.warn(
-              "Backend {} did not exit 10s after SIGTERM; sending SIGKILL",
+              "Backend {} did not exit 30s after SIGTERM; sending SIGKILL",
               backendId
             )
             process.destroyForcibly()
@@ -307,6 +377,7 @@ object LlamaBackendRunner extends Logging {
           log.warn("Unexpected message in stopping state")
           Behaviors.same
       }
+    }
 
     def stopped(): Behavior[Command] = Behaviors.receiveMessage {
       case Command.GetStatus(replyTo) =>

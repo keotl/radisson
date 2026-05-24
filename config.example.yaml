@@ -36,6 +36,16 @@ backends:
     # Chat completions will be: http://172.16.0.2:8080/v1/chat/completions
     # Health check will be: http://172.16.0.2:8080/health
 
+  # Local backend wrapped in docker - stop_command ensures the container is
+  # actually torn down on eviction/shutdown, since SIGTERM to `docker run`
+  # alone does not always propagate to the container.
+  - id: "llama-docker"
+    type: "local"
+    command: "docker run --rm --name llama-docker -p {port}:8080 ghcr.io/ggml-org/llama.cpp:full --server -m /models/model.gguf --port 8080 --host 0.0.0.0"
+    stop_command: "docker stop llama-docker"  # Optional; runs after SIGTERM and must complete before the backend is considered stopped
+    resources:
+      memory: "8Gi"
+
   # Local embeddings backend - for text embeddings only (NOT chat completions)
   # This backend type can only serve /v1/embeddings requests
   - id: "nomic-embed-text"
