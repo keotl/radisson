@@ -7,7 +7,8 @@ import io.circe.Json
 import io.circe.syntax._
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
-import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.stream.{KillSwitches, UniqueKillSwitch}
+import org.apache.pekko.stream.scaladsl.{Keep, Sink, Source}
 import org.apache.pekko.util.ByteString
 import radisson.actors.completion.RequestBuilder.EndpointInfo
 import radisson.actors.http.api.models.{
@@ -35,6 +36,7 @@ object StreamingCompletionRequestActor {
     case ChunkReceived(chunk: ChatCompletionChunk)
     case StreamCompleted()
     case StreamFailed(error: Throwable)
+    case Cancel
   }
 
   def behavior(
@@ -56,6 +58,28 @@ object StreamingCompletionRequestActor {
       var startedAt: Long = 0L
       var requestBody: Option[Json] = None
       var rawRequestBody: Option[String] = None
+      var killSwitch: Option[UniqueKillSwitch] = None
+      var cancelled: Boolean = false
+
+      def recordCancelledTrace(): Unit =
+        requestTracer.foreach { tracer =>
+          val completedAt = System.currentTimeMillis()
+          tracer ! RequestTracer.Command.RecordTrace(
+            RequestTracer.RequestTrace(
+              request_id = requestId,
+              backend_id = backendId,
+              model = model,
+              request_type = "streaming",
+              status = "cancelled",
+              error_type = Some("client_disconnect"),
+              started_at = startedAt,
+              completed_at = completedAt,
+              duration_ms = completedAt - startedAt,
+              request_body = requestBody,
+              raw_request_body = rawRequestBody
+            )
+          )
+        }
 
       Behaviors.receiveMessage {
         case Command.Execute(request, endpointInfo) =>
@@ -96,23 +120,42 @@ object StreamingCompletionRequestActor {
           Behaviors.same
 
         case Command.BackendStreamReady(source) =>
-          context.log.debug(s"Backend stream ready for request $requestId")
+          if cancelled then
+            // Client already gone before the stream arrived: tear down the
+            // upstream connection instead of leaving it dangling until the
+            // read timeout.
+            context.log.info(
+              s"Discarding backend stream for cancelled request $requestId"
+            )
+            source.runWith(Sink.cancelled)
+            recordCancelledTrace()
+            chunkListener ! ChunkMessage.Failed("client cancelled", None)
+            dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
+              requestId,
+              backendId,
+              context.self
+            )
+            Behaviors.stopped
+          else
+            context.log.debug(s"Backend stream ready for request $requestId")
 
-          val chunkStream = source
-            .via(SSEParser.flow)
-            .via(ChunkParser.flow)
-
-          context.pipeToSelf(
-            chunkStream
-              .runForeach { chunk =>
+            val (ks, doneF) = source
+              .viaMat(KillSwitches.single)(Keep.right)
+              .via(SSEParser.flow)
+              .via(ChunkParser.flow)
+              .toMat(Sink.foreach { chunk =>
                 context.self ! Command.ChunkReceived(chunk)
-              }
-          ) {
-            case Success(_)  => Command.StreamCompleted()
-            case Failure(ex) => Command.StreamFailed(ex)
-          }
+              })(Keep.both)
+              .run()
 
-          Behaviors.same
+            killSwitch = Some(ks)
+
+            context.pipeToSelf(doneF) {
+              case Success(_)  => Command.StreamCompleted()
+              case Failure(ex) => Command.StreamFailed(ex)
+            }
+
+            Behaviors.same
 
         case Command.ChunkReceived(chunk) =>
           chunkListener ! ChunkMessage.Chunk(chunk)
@@ -177,6 +220,32 @@ object StreamingCompletionRequestActor {
             context.self
           )
           Behaviors.stopped
+
+        case Command.Cancel =>
+          killSwitch match {
+            case Some(ks) =>
+              // Shutting the kill switch cancels the upstream body source,
+              // which makes Pekko HTTP close the (undrained) connection to the
+              // backend so it stops generating.
+              context.log.info(
+                s"Cancelling streaming request $requestId (client disconnected)"
+              )
+              ks.shutdown()
+              recordCancelledTrace()
+              chunkListener ! ChunkMessage.Failed("client cancelled", None)
+              dispatcherRef ! CompletionRequestDispatcher.Command
+                .RequestCompleted(requestId, backendId, context.self)
+              Behaviors.stopped
+            case None =>
+              // Stream not materialized yet (still awaiting the backend's
+              // response headers). Remember the cancellation; BackendStreamReady
+              // will tear the stream down once it arrives.
+              context.log.info(
+                s"Cancellation received for request $requestId before stream ready"
+              )
+              cancelled = true
+              Behaviors.same
+          }
       }
     }
 }
