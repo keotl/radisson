@@ -129,12 +129,6 @@ object ChatCompletionsRoutes {
 
                     onSuccess(responseFuture) {
                       case CompletionRequestDispatcher.CompletionResponse
-                            .Success(
-                              response
-                            ) =>
-                        complete(response)
-
-                      case CompletionRequestDispatcher.CompletionResponse
                             .StreamingSuccess(
                               status,
                               ct,

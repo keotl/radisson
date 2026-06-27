@@ -45,30 +45,6 @@ object RequestBuilder {
     )
   }
 
-  def buildRequest(
-      request: ChatCompletionRequest,
-      endpointInfo: EndpointInfo
-  ): Request[Either[String, String]] = {
-    val requestWithHeaders = endpointInfo.headers.foldLeft(quickRequest) {
-      case (req, (key, value)) =>
-        req.header(key, value)
-    }
-
-    val requestToSend = endpointInfo.model match {
-      case Some(backendModel) => request.copy(model = backendModel)
-      case None               => request
-    }
-
-    val jsonBody = requestToSend.asJson.printWith(printer)
-
-    requestWithHeaders
-      .post(uri"${endpointInfo.requestUrl}")
-      .readTimeout(endpointInfo.timeout.seconds)
-      .response(asString)
-      .contentType("application/json")
-      .body(jsonBody)
-  }
-
   def buildStreamingRequest(
       request: ChatCompletionRequest,
       endpointInfo: EndpointInfo

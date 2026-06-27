@@ -11,7 +11,6 @@ import org.apache.pekko.util.ByteString
 import radisson.actors.backend.LlamaBackendSupervisor
 import radisson.actors.http.api.models.{
   ChatCompletionRequest,
-  ChatCompletionResponse,
   ErrorDetail,
   ErrorResponse
 }
@@ -147,7 +146,6 @@ object CompletionRequestDispatcher extends Logging {
   }
 
   enum CompletionResponse {
-    case Success(response: ChatCompletionResponse)
     case StreamingSuccess(
         status: Int,
         contentType: ContentType,
