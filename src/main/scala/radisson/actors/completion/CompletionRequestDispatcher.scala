@@ -5,6 +5,9 @@ import scala.concurrent.duration._
 
 import org.apache.pekko.actor.typed.scaladsl.Behaviors
 import org.apache.pekko.actor.typed.{ActorRef, Behavior}
+import org.apache.pekko.http.scaladsl.model.ContentType
+import org.apache.pekko.stream.scaladsl.Source
+import org.apache.pekko.util.ByteString
 import radisson.actors.backend.LlamaBackendSupervisor
 import radisson.actors.http.api.models.{
   ChatCompletionRequest,
@@ -135,6 +138,8 @@ object CompletionRequestDispatcher extends Logging {
         actor: ActorRef[?]
     )
 
+    case CancelStreaming(requestId: String)
+
     case ProcessQueue
 
     case BeginDraining(backendId: String)
@@ -143,12 +148,19 @@ object CompletionRequestDispatcher extends Logging {
 
   enum CompletionResponse {
     case Success(response: ChatCompletionResponse)
+    case StreamingSuccess(
+        status: Int,
+        contentType: ContentType,
+        contentLength: Option[Long],
+        body: Source[ByteString, Any]
+    )
     case Error(error: ErrorResponse, statusCode: Int)
   }
 
   case class RequestInfo(
       actor: ActorRef[?],
-      backendId: String
+      backendId: String,
+      cancel: () => Unit = () => ()
   )
 
   case class DispatcherState(
@@ -495,7 +507,9 @@ object CompletionRequestDispatcher extends Logging {
                     activeRequests =
                       state.activeRequests + (requestId -> RequestInfo(
                         streamingActor,
-                        backendId
+                        backendId,
+                        () =>
+                          streamingActor ! StreamingCompletionRequestActor.Command.Cancel
                       )),
                     backendInFlightRequests =
                       state.backendInFlightRequests + (backendId -> updatedInFlight)
@@ -557,6 +571,37 @@ object CompletionRequestDispatcher extends Logging {
           else
             context.self ! Command.ProcessQueue
             active(newState)
+
+        case Command.CancelStreaming(requestId) =>
+          state.activeRequests.get(requestId) match {
+            case Some(info) =>
+              log.info(
+                "Cancelling request {} (client disconnected)",
+                requestId
+              )
+              info.cancel()
+              Behaviors.same
+            case None =>
+              // Not yet dispatched to a backend: drop it from the queue so we
+              // don't spawn an actor for a request the client already abandoned.
+              state.pendingQueue.find(_.requestId == requestId) match {
+                case Some(queued) =>
+                  log.info(
+                    "Cancelling queued request {} (client disconnected)",
+                    requestId
+                  )
+                  queued.replyTo.toOption.foreach(_.complete())
+                  active(
+                    state.copy(
+                      pendingQueue =
+                        state.pendingQueue.filterNot(_.requestId == requestId),
+                      completedRequests = state.completedRequests + requestId
+                    )
+                  )
+                case None =>
+                  Behaviors.same
+              }
+          }
 
         case Command.ProcessQueue =>
           if state.pendingQueue.isEmpty then Behaviors.same

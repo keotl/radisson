@@ -92,13 +92,27 @@ object ChatCompletionsRoutes {
                       "event-stream",
                       HttpCharsets.`UTF-8`
                     )
-                    val byteSource = sseSource.map { event =>
-                      val sb = new StringBuilder
-                      event.eventType.foreach(t => sb.append(s"event:$t\n"))
-                      event.data.split("\n").foreach(line => sb.append(s"data:$line\n"))
-                      sb.append("\n")
-                      org.apache.pekko.util.ByteString(sb.toString)
-                    }
+                    val byteSource = sseSource
+                      .map { event =>
+                        val sb = new StringBuilder
+                        event.eventType.foreach(t => sb.append(s"event:$t\n"))
+                        event.data
+                          .split("\n")
+                          .foreach(line => sb.append(s"data:$line\n"))
+                        sb.append("\n")
+                        org.apache.pekko.util.ByteString(sb.toString)
+                      }
+                      .watchTermination() { (mat, doneF) =>
+                        // Fires on normal completion AND on client disconnect
+                        // (downstream cancel). Tell the dispatcher to cancel the
+                        // upstream request; it is idempotent and a no-op if the
+                        // request already completed.
+                        doneF.onComplete { _ =>
+                          dispatcher ! CompletionRequestDispatcher.Command
+                            .CancelStreaming(requestId)
+                        }(system.executionContext)
+                        mat
+                      }
                     complete(HttpResponse(
                       entity = HttpEntity.Chunked.fromData(
                         ContentType(sseContentType),
@@ -119,6 +133,29 @@ object ChatCompletionsRoutes {
                               response
                             ) =>
                         complete(response)
+
+                      case CompletionRequestDispatcher.CompletionResponse
+                            .StreamingSuccess(
+                              status,
+                              ct,
+                              len,
+                              body
+                            ) =>
+                        // Stream the upstream body straight through so Pekko
+                        // propagates a client disconnect as a cancel of this
+                        // entity, which tears down the upstream connection.
+                        val entity = len match {
+                          case Some(l) if l > 0 =>
+                            HttpEntity.Default(ct, l, body)
+                          case _ =>
+                            HttpEntity.Chunked.fromData(ct, body)
+                        }
+                        complete(
+                          HttpResponse(
+                            status = StatusCode.int2StatusCode(status),
+                            entity = entity
+                          )
+                        )
 
                       case CompletionRequestDispatcher.CompletionResponse
                             .Error(error, statusCode) =>
