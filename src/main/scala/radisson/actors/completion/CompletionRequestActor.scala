@@ -266,6 +266,9 @@ object CompletionRequestActor extends Logging {
         )
 
       case Command.HttpRequestFailed(error) =>
+        dispatcher ! CompletionRequestDispatcher.Command.BackendSuspect(
+          backendId
+        )
         error match {
           case _: java.util.concurrent.TimeoutException =>
             fail(
@@ -406,6 +409,10 @@ object CompletionRequestActor extends Logging {
           "Completion request {} body stream failed: {}",
           requestId,
           cause.getMessage
+        )
+        // This also fires on client disconnects; a spurious probe is cheap.
+        dispatcher ! CompletionRequestDispatcher.Command.BackendSuspect(
+          backendId
         )
         recordCancelled()
         complete()

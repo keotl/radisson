@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socket
 import sys
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9000
@@ -11,6 +12,12 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9000
 # Marker a request can include in its message content to make the backend
 # respond slowly, giving an e2e test time to abort the client mid-response.
 SLOW_MARKER = "[SLOW]"
+
+# Marker that makes the backend "crash" mid-stream: it stops serving and closes
+# its listener while the process stays alive, like an attached `docker run`
+# whose llama-server died inside the container.
+CRASH_MARKER = "[CRASH]"
+CRASHED = threading.Event()
 
 # Counts of upstream connections the proxy dropped mid-response (i.e. the proxy
 # forwarded a client cancellation by tearing down the connection to us). Guarded
@@ -24,15 +31,19 @@ def _record_disconnect(kind):
         DISCONNECTS[kind] += 1
 
 
-def _request_is_slow(request_data):
+def _request_has_marker(request_data, marker):
     try:
         for msg in request_data.get("messages", []):
             content = msg.get("content", "")
-            if isinstance(content, str) and SLOW_MARKER in content:
+            if isinstance(content, str) and marker in content:
                 return True
     except Exception:
         pass
     return False
+
+
+def _request_is_slow(request_data):
+    return _request_has_marker(request_data, SLOW_MARKER)
 
 
 class MockBackendHandler(BaseHTTPRequestHandler):
@@ -57,7 +68,17 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         if length:
             self.rfile.read(length)
 
+    def _drop_if_crashed(self):
+        # Keep-alive connections opened before the crash are still served by
+        # their handler threads; a dead server would have closed them.
+        if CRASHED.is_set():
+            self.close_connection = True
+            return True
+        return False
+
     def do_GET(self):
+        if self._drop_if_crashed():
+            return
         if self.path == '/health':
             self._send_framed(200, b'OK', 'text/plain')
         elif self.path == '/control/disconnects':
@@ -68,6 +89,8 @@ class MockBackendHandler(BaseHTTPRequestHandler):
             self._send_framed(404, b'')
 
     def do_POST(self):
+        if self._drop_if_crashed():
+            return
         if self.path == '/control/reset':
             self._drain_body()
             with _disconnect_lock:
@@ -131,6 +154,10 @@ class MockBackendHandler(BaseHTTPRequestHandler):
                 is_streaming = False
 
             is_slow = _request_is_slow(request_data)
+
+            if is_streaming and _request_has_marker(request_data, CRASH_MARKER):
+                self._crash_mid_stream()
+                return
 
             if is_streaming:
                 self.send_response(200)
@@ -270,6 +297,40 @@ class MockBackendHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             _record_disconnect("streaming")
 
+    def _crash_mid_stream(self):
+        """Send one chunk of a chunked SSE response, then drop the connection
+        without the terminating chunk (so the proxy sees a truncated entity)
+        and stop accepting connections.
+        """
+        chunk = {
+            "id": "chatcmpl-mock-crash",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "mock-model",
+            "choices": [{
+                "index": 0,
+                "delta": {"role": "assistant", "content": "about to crash"},
+                "finish_reason": None
+            }]
+        }
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/event-stream')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
+        data = f"data: {json.dumps(chunk)}\n\n".encode('utf-8')
+        self.wfile.write(f"{len(data):x}\r\n".encode('ascii') + data + b"\r\n")
+        self.wfile.flush()
+
+        CRASHED.set()
+        # shutdown() blocks until serve_forever returns, so it can't run on
+        # this handler thread's critical path.
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.close_connection = True
+
     def _respond_slow_nonstreaming(self):
         """Send headers (incl. Content-Length) immediately, then dribble the
         JSON body out slowly. The proxy's passthrough starts as soon as headers
@@ -323,3 +384,9 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nShutting down mock backend...")
         server.shutdown()
+
+    if CRASHED.is_set():
+        server.server_close()
+        # Stay alive with nothing listening until the proxy kills us.
+        while True:
+            time.sleep(60)

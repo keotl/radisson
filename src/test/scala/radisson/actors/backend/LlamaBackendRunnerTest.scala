@@ -1,5 +1,10 @@
 package radisson.actors.backend
 
+import java.net.InetSocketAddress
+
+import scala.concurrent.duration._
+
+import com.sun.net.httpserver.HttpServer
 import org.apache.pekko.actor.testkit.typed.scaladsl.ActorTestKit
 import munit.FunSuite
 
@@ -92,5 +97,110 @@ class LlamaBackendRunnerTest extends FunSuite {
 
     assertEquals(response1, response2)
     assertEquals(response1, LlamaBackendRunner.StatusResponse.Idle)
+  }
+  private def startHealthServer(): HttpServer = {
+    val server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext(
+      "/health",
+      exchange => {
+        val body = "OK".getBytes
+        exchange.sendResponseHeaders(200, body.length.toLong)
+        exchange.getResponseBody.write(body)
+        exchange.close()
+      }
+    )
+    server.start()
+    server
+  }
+
+  private val fastLiveness = LlamaBackendRunner.LivenessSettings(
+    interval = 200.millis,
+    retryDelay = 100.millis,
+    failureThreshold = 3
+  )
+
+  private def startRunnerAgainst(
+      server: HttpServer,
+      liveness: LlamaBackendRunner.LivenessSettings,
+      supervisorProbe: org.apache.pekko.actor.testkit.typed.scaladsl.TestProbe[
+        LlamaBackendSupervisor.Command
+      ]
+  ) = {
+    val runner = testKit.spawn(LlamaBackendRunner.behaviorWith(liveness))
+    runner ! LlamaBackendRunner.Command.Start(
+      "test-backend",
+      "sleep 60",
+      server.getAddress.getPort,
+      supervisorProbe.ref,
+      upstreamUrl = Some(s"http://127.0.0.1:${server.getAddress.getPort}")
+    )
+    supervisorProbe.expectMessageType[
+      LlamaBackendSupervisor.Command.BackendStarted
+    ](10.seconds)
+    runner
+  }
+
+  test("report BackendStopped when a running backend stops answering health checks") {
+    val server = startHealthServer()
+    val supervisorProbe =
+      testKit.createTestProbe[LlamaBackendSupervisor.Command]()
+    val runner = startRunnerAgainst(server, fastLiveness, supervisorProbe)
+
+    // The wrapper process (`sleep`) stays alive; only the server goes away.
+    server.stop(0)
+
+    supervisorProbe.expectMessage(
+      10.seconds,
+      LlamaBackendSupervisor.Command.BackendStopped("test-backend")
+    )
+
+    val statusProbe =
+      testKit.createTestProbe[LlamaBackendRunner.StatusResponse]()
+    runner ! LlamaBackendRunner.Command.GetStatus(statusProbe.ref)
+    assertEquals(
+      statusProbe.receiveMessage(),
+      LlamaBackendRunner.StatusResponse.Stopped
+    )
+  }
+
+  test("CheckHealthNow detects a dead backend without waiting for the interval") {
+    val server = startHealthServer()
+    val supervisorProbe =
+      testKit.createTestProbe[LlamaBackendSupervisor.Command]()
+    val runner = startRunnerAgainst(
+      server,
+      fastLiveness.copy(interval = 1.hour),
+      supervisorProbe
+    )
+
+    server.stop(0)
+    runner ! LlamaBackendRunner.Command.CheckHealthNow
+
+    supervisorProbe.expectMessage(
+      10.seconds,
+      LlamaBackendSupervisor.Command.BackendStopped("test-backend")
+    )
+  }
+
+  test("keep running while health checks succeed") {
+    val server = startHealthServer()
+    try {
+      val supervisorProbe =
+        testKit.createTestProbe[LlamaBackendSupervisor.Command]()
+      val runner = startRunnerAgainst(server, fastLiveness, supervisorProbe)
+
+      supervisorProbe.expectNoMessage(1.second)
+
+      val statusProbe =
+        testKit.createTestProbe[LlamaBackendRunner.StatusResponse]()
+      runner ! LlamaBackendRunner.Command.GetStatus(statusProbe.ref)
+      assertEquals(
+        statusProbe.receiveMessage(),
+        LlamaBackendRunner.StatusResponse.Running(server.getAddress.getPort)
+      )
+      runner ! LlamaBackendRunner.Command.Stop
+    } finally {
+      server.stop(0)
+    }
   }
 }

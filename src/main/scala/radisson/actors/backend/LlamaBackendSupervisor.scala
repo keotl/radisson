@@ -23,6 +23,7 @@ object LlamaBackendSupervisor extends Logging {
     )
     case BackendFailed(backendId: String, reason: String)
     case BackendStopped(backendId: String)
+    case CheckBackendHealth(backendId: String)
     case RegisterDispatcher(
         dispatcher: ActorRef[
           radisson.actors.completion.CompletionRequestDispatcher.Command
@@ -465,7 +466,10 @@ object LlamaBackendSupervisor extends Logging {
             case Some(backend) =>
               log.info("Backend {} stopped (was running)", backendId)
 
-              active(
+              // The runner has finished (crash or explicit stop), and the
+              // memory it held may unblock a start waiting for room.
+              context.stop(backend.runner)
+              processNextPendingStart(
                 state.copy(
                   runningBackends = state.runningBackends - backendId,
                   allocatedPorts = state.allocatedPorts - backend.port
@@ -493,6 +497,12 @@ object LlamaBackendSupervisor extends Logging {
                   Behaviors.same
               }
           }
+
+        case Command.CheckBackendHealth(backendId) =>
+          state.runningBackends.get(backendId).foreach { backend =>
+            backend.runner ! LlamaBackendRunner.Command.CheckHealthNow
+          }
+          Behaviors.same
 
         case Command.StopBackend(backendId) =>
           state.runningBackends.get(backendId) match {

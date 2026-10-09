@@ -49,6 +49,14 @@ backends:
       memory: "100Mi"
     upstream_timeout: 10
 
+  - id: "crashy-mock"
+    type: "local"
+    command: "python3 e2e_tests/mock_backend/mock_server.py 9004"
+    upstream_url: "http://127.0.0.1:9004"
+    resources:
+      memory: "100Mi"
+    upstream_timeout: 10
+
   - id: "first-available-mock"
     type: "first-available"
     backends:

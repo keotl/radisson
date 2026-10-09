@@ -214,6 +214,9 @@ object StreamingCompletionRequestActor {
           }
 
           chunkListener ! ChunkMessage.Failed(error.getMessage)
+          dispatcherRef ! CompletionRequestDispatcher.Command.BackendSuspect(
+            backendId
+          )
           dispatcherRef ! CompletionRequestDispatcher.Command.RequestCompleted(
             requestId,
             backendId,

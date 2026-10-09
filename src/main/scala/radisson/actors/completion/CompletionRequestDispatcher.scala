@@ -139,6 +139,10 @@ object CompletionRequestDispatcher extends Logging {
 
     case CancelStreaming(requestId: String)
 
+    // A request to this backend failed at the transport level; the backend may
+    // have crashed, so ask the supervisor to probe it right away.
+    case BackendSuspect(backendId: String)
+
     case ProcessQueue
 
     case BeginDraining(backendId: String)
@@ -569,6 +573,11 @@ object CompletionRequestDispatcher extends Logging {
           else
             context.self ! Command.ProcessQueue
             active(newState)
+
+        case Command.BackendSuspect(backendId) =>
+          state.backendSupervisor ! LlamaBackendSupervisor.Command
+            .CheckBackendHealth(backendId)
+          Behaviors.same
 
         case Command.CancelStreaming(requestId) =>
           state.activeRequests.get(requestId) match {
