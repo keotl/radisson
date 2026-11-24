@@ -45,6 +45,20 @@ object RequestBuilder {
     )
   }
 
+  /** JSON body sent upstream: the client's request (including any fields
+    * radisson doesn't model) with the backend's model name substituted.
+    */
+  def upstreamBody(
+      request: ChatCompletionRequest,
+      endpointInfo: EndpointInfo
+  ): String = {
+    val requestToSend = endpointInfo.model match {
+      case Some(backendModel) => request.copy(model = backendModel)
+      case None               => request
+    }
+    requestToSend.asJson.printWith(printer)
+  }
+
   def buildStreamingRequest(
       request: ChatCompletionRequest,
       endpointInfo: EndpointInfo
@@ -54,16 +68,11 @@ object RequestBuilder {
         req.header(key, value)
     }
 
-    val requestToSend = endpointInfo.model match {
-      case Some(backendModel) => request.copy(model = backendModel)
-      case None               => request
-    }
-
     requestWithHeaders
       .post(uri"${endpointInfo.requestUrl}")
       .readTimeout(endpointInfo.timeout.seconds)
       .contentType("application/json")
-      .body(requestToSend.asJson.printWith(printer))
+      .body(upstreamBody(request, endpointInfo))
       .response(asStreamUnsafe(sttp.capabilities.pekko.PekkoStreams))
   }
 
