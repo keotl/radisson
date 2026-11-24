@@ -1,6 +1,8 @@
 package radisson.actors.http.api.models
 
-import io.circe.Codec
+import io.circe.derivation.Configuration
+import io.circe.{Codec, JsonObject}
+import radisson.util.PassthroughCodec
 
 case class ChatCompletionRequest(
     model: String,
@@ -23,8 +25,22 @@ case class ChatCompletionRequest(
       None, // "auto", "default", "flex", "priority"
     max_completion_tokens: Option[Int] = None,
     stream_options: Option[StreamOptions] = None,
-    reasoning_effort: Option[String] = None // "low", "medium", "high"
-) derives Codec.AsObject
+    reasoning_effort: Option[String] =
+      None, // e.g. "low", "medium", "high"; passed to the backend as-is
+    // Fields not modelled above (e.g. llama.cpp's chat_template_kwargs,
+    // top_k, min_p, response_format). Forwarded to the backend unchanged.
+    passthrough: JsonObject = JsonObject.empty
+)
+
+object ChatCompletionRequest {
+  private given Configuration = Configuration.default.withDefaults
+
+  given Codec.AsObject[ChatCompletionRequest] = PassthroughCodec(
+    Codec.AsObject.derivedConfigured[ChatCompletionRequest],
+    _.passthrough,
+    (r, extra) => r.copy(passthrough = extra)
+  )
+}
 
 case class StreamOptions(
     include_usage: Option[Boolean] = None
